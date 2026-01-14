@@ -3,6 +3,9 @@ name: rebase-feature-from-sprint (core)
 on:
   workflow_call:
 
+permissions:
+  contents: write
+
 jobs:
   rebase-feature-from-sprint:
     name: rebase-feature-from-sprint
