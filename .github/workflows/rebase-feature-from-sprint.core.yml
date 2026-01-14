@@ -1,0 +1,89 @@
+name: rebase-feature-from-sprint (core)
+
+on:
+  workflow_call:
+
+jobs:
+  rebase-feature-from-sprint:
+    name: rebase-feature-from-sprint
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout SIEMPRE primero
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get branch name
+        id: vars
+        run: |
+          echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+
+      # Parse branch
+      - name: Parse feature branch
+        id: parse
+        run: |
+          set -e
+          BRANCH="${{ steps.vars.outputs.branch }}"
+
+          if [[ "$BRANCH" =~ ^sprint([0-9]+)-([A-Z]+-[0-9]+)-(.*)$ ]]; then
+            SPRINT="${BASH_REMATCH[1]}"
+            TICKET="${BASH_REMATCH[2]}"
+            DESCRIPTION="${BASH_REMATCH[3]}"
+            PREV_SPRINT=$((SPRINT - 1))
+
+            echo "matched=true" >> "$GITHUB_OUTPUT"
+            echo "sprint=$SPRINT" >> "$GITHUB_OUTPUT"
+            echo "ticket=$TICKET" >> "$GITHUB_OUTPUT"
+            echo "description=$DESCRIPTION" >> "$GITHUB_OUTPUT"
+            echo "prev_sprint=$PREV_SPRINT" >> "$GITHUB_OUTPUT"
+          else
+            echo "matched=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop if invalid branch
+        if: steps.parse.outputs.matched == 'false'
+        run: |
+          echo "❌ Invalid branch name. Exiting."
+          exit 1
+
+      # Git config
+      - name: Configure git
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+
+      # FIRST REBASE: sprint_X
+      - name: Rebase onto sprint branch (if exists)
+        run: |
+          SPRINT_BRANCH="sprint_${{ steps.parse.outputs.sprint }}"
+
+          if git ls-remote --heads origin "$SPRINT_BRANCH" | grep -q "$SPRINT_BRANCH"; then
+            git fetch origin "$SPRINT_BRANCH"
+            git rebase "origin/$SPRINT_BRANCH"
+          else
+            echo "ℹ Sprint branch not found, skipping"
+          fi
+
+      # SECOND REBASE: previous sprint feature
+      - name: Rebase onto previous sprint feature (if exists)
+        run: |
+          PREV_BRANCH="sprint${{ steps.parse.outputs.prev_sprint }}-${{ steps.parse.outputs.ticket }}-${{ steps.parse.outputs.description }}"
+
+          if git ls-remote --heads origin "$PREV_BRANCH" | grep -q "$PREV_BRANCH"; then
+            git fetch origin "$PREV_BRANCH"
+            git rebase "origin/$PREV_BRANCH"
+          else
+            echo "ℹ Previous sprint feature not found, skipping"
+          fi
+
+      # PUSH
+      - name: Push rebased branch
+        run: |
+          git push --force-with-lease origin "${{ steps.vars.outputs.branch }}"
+
+      - name: Done
+        run: echo "✔ Feature branch rebased successfully"
