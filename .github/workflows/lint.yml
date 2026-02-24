@@ -18,14 +18,14 @@ jobs:
         with:
           repository: byteit-ai/github-workflows
           path: .github-workflows
-          sparse-checkout: .github/ruff.toml
+          sparse-checkout: ruff.toml
 
       - name: Run Ruff Lint
         uses: astral-sh/ruff-action@v3
         with:
-          args: check . --config .github-workflows/.github/ruff.toml --output-format=github
+          args: check . --config .github-workflows/ruff.toml --output-format=github
 
       - name: Run Ruff Format Check
         uses: astral-sh/ruff-action@v3
         with:
-          args: format . --check --config .github-workflows/.github/ruff.toml
+          args: format . --check --config .github-workflows/ruff.toml

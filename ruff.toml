@@ -1,4 +1,7 @@
+
 # Exclude a variety of commonly ignored directories.
+include = ["*.py", "*.pyi", "**/pyproject.toml"]
+
 exclude = [
     ".bzr",
     ".direnv",
@@ -6,6 +9,7 @@ exclude = [
     ".github",
     ".git-rewrite",
     ".hg",
+    ".ipynb",
     ".ipynb_checkpoints",
     ".mypy_cache",
     ".nox",
