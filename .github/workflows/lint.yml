@@ -1,4 +1,4 @@
-name: Lint and Format with Ruff
+name: github-workflows lint
 
 on:
   workflow_call:
