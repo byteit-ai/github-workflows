@@ -1,0 +1,24 @@
+name: Lint and Format with Ruff
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Ruff Lint & Format
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Ruff Lint
+        uses: astral-sh/ruff-action@v3
+        with:
+          args: check . --config .github/ruff.toml --output-format=github
+
+      - name: Run Ruff Format Check
+        uses: astral-sh/ruff-action@v3
+        with:
+          args: format . --check --config .github/ruff.toml
