@@ -59,14 +59,25 @@ jobs:
         id: jira_key
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           KEY=""
-          # Branch formats: sprintX-PROJ-123-desc  or  PROJ-123-desc
-          if [[ "$HEAD_REF" =~ ([A-Z]+-[0-9]+) ]]; then
+          # dev → main is a release PR — no Jira key required
+          if [[ "$HEAD_REF" == "dev" && "$BASE_REF" == "main" ]]; then
+            echo "key=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Branch formats (anchored, in priority order):
+          #   sprintX-PROJ-123-free_text   → capture group 2
+          #   PROJ-123-free_text           → capture group 1 of second pattern
+          if [[ "$HEAD_REF" =~ ^sprint[0-9]+-([A-Z]+-[0-9]+)(-|$) ]]; then
             KEY="${BASH_REMATCH[1]}"
-          elif [[ "$PR_TITLE" =~ ([A-Z]+-[0-9]+) ]]; then
+          elif [[ "$HEAD_REF" =~ ^([A-Z]+-[0-9]+)(-|$) ]]; then
             KEY="${BASH_REMATCH[1]}"
+          elif [[ "$PR_TITLE" =~ (^|[^A-Z])([A-Z]+-[0-9]+)([^0-9]|$) ]]; then
+            KEY="${BASH_REMATCH[2]}"
           fi
 
           if [ -z "$KEY" ]; then
@@ -206,14 +217,19 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
-          # Sprint or feature branches → must target dev
+          # Release PR: dev → main is always allowed
+          if [[ "$HEAD_REF" == "dev" && "$BASE_REF" == "main" ]]; then
+            exit 0
+          fi
+
+          # Sprint / feature branches must target dev
           if [[ "$HEAD_REF" =~ ^sprint[0-9]+-[A-Z]+-[0-9]+ ]] || \
              [[ "$HEAD_REF" =~ ^[A-Z]+-[0-9]+ ]]; then
             if [[ "$BASE_REF" != "dev" ]]; then
               echo "❌ Branch '$HEAD_REF' must target 'dev', not '$BASE_REF'" >> errors.log
             fi
-          # Only dev → main
-          elif [[ "$BASE_REF" == "main" && "$HEAD_REF" != "dev" ]]; then
+          # Any other branch targeting main is forbidden
+          elif [[ "$BASE_REF" == "main" ]]; then
             echo "❌ Only 'dev' can merge into 'main' (got '$HEAD_REF')" >> errors.log
           fi
 
