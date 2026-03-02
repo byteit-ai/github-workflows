@@ -1,0 +1,240 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Jira Guard — reusable PR quality gate
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Call from any repo:
+#    uses: byteit-ai/github-workflows/.github/workflows/jira-guard.yml@main
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+name: Jira Guard
+
+on:
+  workflow_call:
+    inputs:
+      jira_domain:
+        description: "Jira cloud domain (e.g. mycompany.atlassian.net)"
+        type: string
+        default: "byteit-ai.atlassian.net"
+      max_lines_warn:
+        description: "Soft limit — total changed lines"
+        type: number
+        default: 200
+      max_lines_hard:
+        description: "Hard limit — total changed lines"
+        type: number
+        default: 500
+      max_files_warn:
+        description: "Soft limit — total changed files"
+        type: number
+        default: 10
+      max_files_hard:
+        description: "Hard limit — total changed files"
+        type: number
+        default: 20
+      min_description_length:
+        description: "Minimum PR body length (chars)"
+        type: number
+        default: 20
+    secrets:
+      JIRA_EMAIL:
+        required: true
+      JIRA_API_TOKEN:
+        required: true
+
+jobs:
+  jira-guard:
+    name: Jira Guard
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 0 · Setup ─────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Init log files
+        run: touch errors.log warnings.log
+
+      # ── 1 · Extract Jira key ──────────────────
+      - name: "1 · Extract Jira key"
+        id: jira_key
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          KEY=""
+          # Branch formats: sprintX-PROJ-123-desc  or  PROJ-123-desc
+          if [[ "$HEAD_REF" =~ ([A-Z]+-[0-9]+) ]]; then
+            KEY="${BASH_REMATCH[1]}"
+          elif [[ "$PR_TITLE" =~ ([A-Z]+-[0-9]+) ]]; then
+            KEY="${BASH_REMATCH[1]}"
+          fi
+
+          if [ -z "$KEY" ]; then
+            echo "❌ No Jira key in branch name or PR title" >> errors.log
+          fi
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
+      # ── 2 · Jira issue exists · status = Review ─
+      - name: "2 · Jira issue & status"
+        if: steps.jira_key.outputs.key != ''
+        env:
+          JIRA_KEY: ${{ steps.jira_key.outputs.key }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_DOMAIN: ${{ inputs.jira_domain }}
+        run: |
+          HTTP=$(curl -s -o jira_response.json -w "%{http_code}" \
+            -u "$JIRA_EMAIL:$JIRA_TOKEN" \
+            -H "Accept: application/json" \
+            "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY")
+
+          if [ "$HTTP" -ne 200 ]; then
+            echo "❌ Jira issue $JIRA_KEY not found (HTTP $HTTP)" >> errors.log
+            exit 0
+          fi
+
+          STATUS=$(jq -r '.fields.status.name' jira_response.json)
+          if [ "$STATUS" != "Review" ]; then
+            echo "❌ Issue status is '$STATUS', expected 'Review'" >> errors.log
+          fi
+
+      # ── 3 · Blocking dependencies must be Done ─
+      - name: "3 · Jira dependencies"
+        if: steps.jira_key.outputs.key != ''
+        env:
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_DOMAIN: ${{ inputs.jira_domain }}
+        run: |
+          [ ! -f jira_response.json ] && exit 0
+
+          BLOCKERS=$(jq -r '
+            .fields.issuelinks[]?
+            | select(.type.name=="Blocks" or .type.name=="is blocked by")
+            | .inwardIssue.key // .outwardIssue.key
+          ' jira_response.json 2>/dev/null)
+
+          OPEN=""
+          for B in $BLOCKERS; do
+            RESP=$(curl -sf -u "$JIRA_EMAIL:$JIRA_TOKEN" \
+              -H "Accept: application/json" \
+              "https://$JIRA_DOMAIN/rest/api/3/issue/$B" 2>/dev/null) || continue
+            B_STATUS=$(echo "$RESP" | jq -r '.fields.status.name')
+            if [ "$B_STATUS" != "Done" ]; then
+              OPEN="$OPEN $B ($B_STATUS)"
+            fi
+          done
+
+          if [ -n "$OPEN" ]; then
+            echo "❌ Blocked by unresolved dependencies:$OPEN" >> errors.log
+          fi
+
+      # ── 4 · PR size — lines & files ────────────
+      - name: "4 · PR size"
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch origin "$BASE_REF" --quiet 2>/dev/null || true
+
+          # Exclude docs / config / lock files from line counts
+          STATS=$(git diff --numstat "origin/$BASE_REF"..."$HEAD_SHA" \
+            -- . ':!*.md' ':!*.txt' ':!*.json' ':!*.yml' ':!*.yaml' ':!*.lock' \
+            2>/dev/null || true)
+
+          ADD=0; DEL=0; FILES=0
+          while IFS=$'\t' read -r a d f; do
+            [ -z "$f" ] && continue
+            [[ "$a" == "-" ]] && continue          # skip binaries
+            ADD=$((ADD + a)); DEL=$((DEL + d)); FILES=$((FILES + 1))
+          done <<< "$STATS"
+
+          LINES=$((ADD + DEL))
+
+          # ── Lines ──
+          if [ "$LINES" -gt ${{ inputs.max_lines_hard }} ]; then
+            echo "❌ PR too large: $LINES lines changed (limit ${{ inputs.max_lines_hard }})" >> errors.log
+          elif [ "$LINES" -gt ${{ inputs.max_lines_warn }} ]; then
+            echo "⚠️  Large PR: $LINES lines changed (recommended < ${{ inputs.max_lines_warn }})" >> warnings.log
+          fi
+
+          # ── Files ──
+          if [ "$FILES" -gt ${{ inputs.max_files_hard }} ]; then
+            echo "❌ Too many files changed: $FILES (limit ${{ inputs.max_files_hard }})" >> errors.log
+          elif [ "$FILES" -gt ${{ inputs.max_files_warn }} ]; then
+            echo "⚠️  Many files changed: $FILES (recommended < ${{ inputs.max_files_warn }})" >> warnings.log
+          fi
+
+      # ── 5 · Sensitive / secret file scan ───────
+      - name: "5 · Sensitive file scan"
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          CHANGED=$(git diff --name-only "origin/$BASE_REF"..."$HEAD_SHA" 2>/dev/null || true)
+
+          # Patterns that should never appear in a PR
+          DENY='(\.env(\..*)?|\.pem|\.key|\.p12|\.pfx|\.keystore|\.jks|\.secret|\.secrets|\.npmrc|\.pypirc|id_rsa|id_ed25519|id_dsa|credentials|service[-_]account.*\.json)$'
+
+          FLAGGED=""
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            BASENAME=$(basename "$FILE")
+            if [[ "$BASENAME" =~ $DENY ]]; then
+              FLAGGED="${FLAGGED}  • ${FILE}\n"
+            fi
+          done <<< "$CHANGED"
+
+          if [ -n "$FLAGGED" ]; then
+            echo "❌ Sensitive files detected in PR:" >> errors.log
+            echo -e "$FLAGGED" >> errors.log
+          fi
+
+      # ── 6 · PR description ────────────────────
+      - name: "6 · PR description"
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          LEN=${#PR_BODY}
+          if [ "$LEN" -lt ${{ inputs.min_description_length }} ]; then
+            echo "⚠️  PR description too short ($LEN chars, min ${{ inputs.min_description_length }})" >> warnings.log
+          fi
+
+      # ── 7 · Branch policy ─────────────────────
+      - name: "7 · Branch policy"
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          # Sprint or feature branches → must target dev
+          if [[ "$HEAD_REF" =~ ^sprint[0-9]+-[A-Z]+-[0-9]+ ]] || \
+             [[ "$HEAD_REF" =~ ^[A-Z]+-[0-9]+ ]]; then
+            if [[ "$BASE_REF" != "dev" ]]; then
+              echo "❌ Branch '$HEAD_REF' must target 'dev', not '$BASE_REF'" >> errors.log
+            fi
+          # Only dev → main
+          elif [[ "$BASE_REF" == "main" && "$HEAD_REF" != "dev" ]]; then
+            echo "❌ Only 'dev' can merge into 'main' (got '$HEAD_REF')" >> errors.log
+          fi
+
+      # ── 📋 Final report ───────────────────────
+      - name: Report
+        if: always()
+        run: |
+          echo "## 🛡️ Jira Guard"
+          echo ""
+
+          if [ -s warnings.log ]; then
+            echo "### ⚠️  Warnings"
+            cat warnings.log
+            echo ""
+          fi
+
+          if [ -s errors.log ]; then
+            echo "### ❌ Errors"
+            cat errors.log
+            echo ""
+            exit 1
+          fi
+
+          echo "### ✅ All checks passed"
