@@ -108,9 +108,9 @@ jobs:
             TRANS=$(curl -sf -u "$JIRA_EMAIL:$JIRA_TOKEN" \
               -H "Accept: application/json" \
               "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions")
-            TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.name=="Review") | .id' | head -1)
+            TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.name | ascii_downcase | contains("review")) | .id' | head -1)
             if [ -z "$TRANS_ID" ]; then
-              echo "❌ Could not find 'Review' transition for $JIRA_KEY" >> errors.log
+              echo "❌ Could not find 'Review' transition for $JIRA_KEY (available: $(echo \"$TRANS\" | jq -r '[.transitions[].name] | join(\", \")'))" >> errors.log
             else
               curl -sf -X POST \
                 -u "$JIRA_EMAIL:$JIRA_TOKEN" \
@@ -135,16 +135,16 @@ jobs:
           TRANS=$(curl -sf -u "$JIRA_EMAIL:$JIRA_TOKEN" \
             -H "Accept: application/json" \
             "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions")
-          TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.name=="DONE") | .id' | head -1)
+          TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.name | ascii_downcase | (. == "done" or contains("done"))) | .id' | head -1)
           if [ -z "$TRANS_ID" ]; then
-            echo "⚠️  Could not find 'DONE' transition for $JIRA_KEY" >> warnings.log
+            echo "⚠️  Could not find 'Done' transition for $JIRA_KEY (available: $(echo "$TRANS" | jq -r '[.transitions[].name] | join(", ")')))" >> warnings.log
           else
             curl -sf -X POST \
               -u "$JIRA_EMAIL:$JIRA_TOKEN" \
               -H "Content-Type: application/json" \
               -d "{\"transition\":{\"id\":\"$TRANS_ID\"}}" \
               "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions"
-            echo "✅ Transitioned $JIRA_KEY: 'Review' → 'DONE'"
+            echo "✅ Transitioned $JIRA_KEY: 'Review' → 'Done'"
           fi
 
       # ── 3 · Blocking dependencies must be DONE ─
@@ -169,10 +169,11 @@ jobs:
               -H "Accept: application/json" \
               "https://$JIRA_DOMAIN/rest/api/3/issue/$B" 2>/dev/null) || continue
             B_STATUS=$(echo "$RESP" | jq -r '.fields.status.name')
-            if [ "$B_STATUS" != "DONE" ]; then
+            B_STATUS_LOWER=$(echo "$B_STATUS" | tr '[:upper:]' '[:lower:]')
+            if [ "$B_STATUS_LOWER" != "done" ]; then
               OPEN="$OPEN $B ($B_STATUS)"
             fi
-          DONE
+          done
 
           if [ -n "$OPEN" ]; then
             echo "❌ Blocked by unresolved dependencies:$OPEN" >> errors.log
@@ -196,7 +197,7 @@ jobs:
             [ -z "$f" ] && continue
             [[ "$a" == "-" ]] && continue          # skip binaries
             ADD=$((ADD + a)); DEL=$((DEL + d)); FILES=$((FILES + 1))
-          DONE <<< "$STATS"
+          done <<< "$STATS"
 
           LINES=$((ADD + DEL))
 
@@ -232,7 +233,7 @@ jobs:
             if [[ "$BASENAME" =~ $DENY ]]; then
               FLAGGED="${FLAGGED}  • ${FILE}\n"
             fi
-          DONE <<< "$CHANGED"
+          done <<< "$CHANGED"
 
           if [ -n "$FLAGGED" ]; then
             echo "❌ Sensitive files detected in PR:" >> errors.log
