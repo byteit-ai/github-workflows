@@ -70,11 +70,8 @@ jobs:
           fi
 
           # Branch formats (anchored, in priority order):
-          #   sprintX-PROJ-123-free_text   → capture group 2
-          #   PROJ-123-free_text           → capture group 1 of second pattern
-          if [[ "$HEAD_REF" =~ ^sprint[0-9]+-([A-Z]+-[0-9]+)(-|$) ]]; then
-            KEY="${BASH_REMATCH[1]}"
-          elif [[ "$HEAD_REF" =~ ^([A-Z]+-[0-9]+)(-|$) ]]; then
+          #   PROJ-123-free_text   → capture group 1
+          if [[ "$HEAD_REF" =~ ^([A-Z]+-[0-9]+)(-|$) ]]; then
             KEY="${BASH_REMATCH[1]}"
           elif [[ "$PR_TITLE" =~ (^|[^A-Z])([A-Z]+-[0-9]+)([^0-9]|$) ]]; then
             KEY="${BASH_REMATCH[2]}"
@@ -85,9 +82,9 @@ jobs:
           fi
           echo "key=$KEY" >> "$GITHUB_OUTPUT"
 
-      # ── 2 · Jira issue exists · status = Review ─
+      # ── 2 · Jira issue exists · status = IN PROGRESS or REVIEW ─
       - name: "2 · Jira issue & status"
-        if: steps.jira_key.outputs.key != ''
+        if: steps.jira_key.outputs.key != '' && github.event.action != 'closed'
         env:
           JIRA_KEY: ${{ steps.jira_key.outputs.key }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
@@ -105,11 +102,52 @@ jobs:
           fi
 
           STATUS=$(jq -r '.fields.status.name' jira_response.json)
-          if [ "$STATUS" != "Review" ]; then
-            echo "❌ Issue status is '$STATUS', expected 'Review'" >> errors.log
+
+          if [ "$STATUS" == "IN PROGRESS" ]; then
+            # Auto-transition to REVIEW
+            TRANS=$(curl -sf -u "$JIRA_EMAIL:$JIRA_TOKEN" \
+              -H "Accept: application/json" \
+              "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions")
+            TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.name=="REVIEW") | .id' | head -1)
+            if [ -z "$TRANS_ID" ]; then
+              echo "❌ Could not find 'REVIEW' transition for $JIRA_KEY" >> errors.log
+            else
+              curl -sf -X POST \
+                -u "$JIRA_EMAIL:$JIRA_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "{\"transition\":{\"id\":\"$TRANS_ID\"}}" \
+                "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions"
+              echo "✅ Transitioned $JIRA_KEY: 'IN PROGRESS' → 'REVIEW'"
+            fi
+          elif [ "$STATUS" != "REVIEW" ]; then
+            echo "❌ Issue status is '$STATUS', expected 'IN PROGRESS' or 'REVIEW'" >> errors.log
           fi
 
-      # ── 3 · Blocking dependencies must be Done ─
+      # ── 2b · Transition to DONE on PR merge ──────
+      - name: "2b · Transition to DONE on merge"
+        if: steps.jira_key.outputs.key != '' && github.event.action == 'closed' && github.event.pull_request.merged == true
+        env:
+          JIRA_KEY: ${{ steps.jira_key.outputs.key }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_DOMAIN: ${{ inputs.jira_domain }}
+        run: |
+          TRANS=$(curl -sf -u "$JIRA_EMAIL:$JIRA_TOKEN" \
+            -H "Accept: application/json" \
+            "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions")
+          TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.name=="DONE") | .id' | head -1)
+          if [ -z "$TRANS_ID" ]; then
+            echo "⚠️  Could not find 'DONE' transition for $JIRA_KEY" >> warnings.log
+          else
+            curl -sf -X POST \
+              -u "$JIRA_EMAIL:$JIRA_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"transition\":{\"id\":\"$TRANS_ID\"}}" \
+              "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions"
+            echo "✅ Transitioned $JIRA_KEY: 'REVIEW' → 'DONE'"
+          fi
+
+      # ── 3 · Blocking dependencies must be DONE ─
       - name: "3 · Jira dependencies"
         if: steps.jira_key.outputs.key != ''
         env:
@@ -131,10 +169,10 @@ jobs:
               -H "Accept: application/json" \
               "https://$JIRA_DOMAIN/rest/api/3/issue/$B" 2>/dev/null) || continue
             B_STATUS=$(echo "$RESP" | jq -r '.fields.status.name')
-            if [ "$B_STATUS" != "Done" ]; then
+            if [ "$B_STATUS" != "DONE" ]; then
               OPEN="$OPEN $B ($B_STATUS)"
             fi
-          done
+          DONE
 
           if [ -n "$OPEN" ]; then
             echo "❌ Blocked by unresolved dependencies:$OPEN" >> errors.log
@@ -158,7 +196,7 @@ jobs:
             [ -z "$f" ] && continue
             [[ "$a" == "-" ]] && continue          # skip binaries
             ADD=$((ADD + a)); DEL=$((DEL + d)); FILES=$((FILES + 1))
-          done <<< "$STATS"
+          DONE <<< "$STATS"
 
           LINES=$((ADD + DEL))
 
@@ -194,7 +232,7 @@ jobs:
             if [[ "$BASENAME" =~ $DENY ]]; then
               FLAGGED="${FLAGGED}  • ${FILE}\n"
             fi
-          done <<< "$CHANGED"
+          DONE <<< "$CHANGED"
 
           if [ -n "$FLAGGED" ]; then
             echo "❌ Sensitive files detected in PR:" >> errors.log
@@ -222,9 +260,8 @@ jobs:
             exit 0
           fi
 
-          # Sprint / feature branches must target dev
-          if [[ "$HEAD_REF" =~ ^sprint[0-9]+-[A-Z]+-[0-9]+ ]] || \
-             [[ "$HEAD_REF" =~ ^[A-Z]+-[0-9]+ ]]; then
+          # Feature branches must target dev
+          if [[ "$HEAD_REF" =~ ^[A-Z]+-[0-9]+ ]]; then
             if [[ "$BASE_REF" != "dev" ]]; then
               echo "❌ Branch '$HEAD_REF' must target 'dev', not '$BASE_REF'" >> errors.log
             fi
