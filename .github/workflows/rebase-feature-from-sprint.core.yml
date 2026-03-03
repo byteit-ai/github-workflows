@@ -9,6 +9,7 @@ permissions:
 jobs:
   rebase-feature-from-sprint:
     name: rebase-feature-from-sprint
+    if: false
     runs-on: ubuntu-latest
 
     steps:

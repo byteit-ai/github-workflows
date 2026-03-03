@@ -82,7 +82,7 @@ jobs:
           fi
           echo "key=$KEY" >> "$GITHUB_OUTPUT"
 
-      # ── 2 · Jira issue exists · status = IN PROGRESS or REVIEW ─
+      # ── 2 · Jira issue exists · status = In Progress or Review ─
       - name: "2 · Jira issue & status"
         if: steps.jira_key.outputs.key != '' && github.event.action != 'closed'
         env:
@@ -103,24 +103,24 @@ jobs:
 
           STATUS=$(jq -r '.fields.status.name' jira_response.json)
 
-          if [ "$STATUS" == "IN PROGRESS" ]; then
-            # Auto-transition to REVIEW
+          if [ "$STATUS" == "In Progress" ]; then
+            # Auto-transition to Review
             TRANS=$(curl -sf -u "$JIRA_EMAIL:$JIRA_TOKEN" \
               -H "Accept: application/json" \
               "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions")
-            TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.name=="REVIEW") | .id' | head -1)
+            TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.name=="Review") | .id' | head -1)
             if [ -z "$TRANS_ID" ]; then
-              echo "❌ Could not find 'REVIEW' transition for $JIRA_KEY" >> errors.log
+              echo "❌ Could not find 'Review' transition for $JIRA_KEY" >> errors.log
             else
               curl -sf -X POST \
                 -u "$JIRA_EMAIL:$JIRA_TOKEN" \
                 -H "Content-Type: application/json" \
                 -d "{\"transition\":{\"id\":\"$TRANS_ID\"}}" \
                 "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions"
-              echo "✅ Transitioned $JIRA_KEY: 'IN PROGRESS' → 'REVIEW'"
+              echo "✅ Transitioned $JIRA_KEY: 'In Progress' → 'Review'"
             fi
-          elif [ "$STATUS" != "REVIEW" ]; then
-            echo "❌ Issue status is '$STATUS', expected 'IN PROGRESS' or 'REVIEW'" >> errors.log
+          elif [ "$STATUS" != "Review" ]; then
+            echo "❌ Issue status is '$STATUS', expected 'In Progress' or 'Review'" >> errors.log
           fi
 
       # ── 2b · Transition to DONE on PR merge ──────
@@ -144,7 +144,7 @@ jobs:
               -H "Content-Type: application/json" \
               -d "{\"transition\":{\"id\":\"$TRANS_ID\"}}" \
               "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions"
-            echo "✅ Transitioned $JIRA_KEY: 'REVIEW' → 'DONE'"
+            echo "✅ Transitioned $JIRA_KEY: 'Review' → 'DONE'"
           fi
 
       # ── 3 · Blocking dependencies must be DONE ─
