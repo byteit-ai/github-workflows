@@ -3,6 +3,10 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Call from any repo:
 #    uses: byteit-ai/github-workflows/.github/workflows/jira-guard.yml@main
+#
+#  Caller must trigger on:
+#    pull_request: [opened, synchronize, reopened, closed]
+#    pull_request_review: [submitted]   ← required for "changes requested" → In Progress
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 name: Jira Guard
 
@@ -84,7 +88,7 @@ jobs:
 
       # ── 2 · Jira issue exists · status = In Progress or Review ─
       - name: "2 · Jira issue & status"
-        if: steps.jira_key.outputs.key != '' && github.event.action != 'closed'
+        if: steps.jira_key.outputs.key != '' && github.event_name == 'pull_request' && github.event.action != 'closed'
         env:
           JIRA_KEY: ${{ steps.jira_key.outputs.key }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
@@ -108,9 +112,9 @@ jobs:
             TRANS=$(curl -sf -u "$JIRA_EMAIL:$JIRA_TOKEN" \
               -H "Accept: application/json" \
               "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions")
-            TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.name | ascii_downcase | contains("review")) | .id' | head -1)
+            TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.name=="InProgress2Review") | .id' | head -1)
             if [ -z "$TRANS_ID" ]; then
-              echo "❌ Could not find 'Review' transition for $JIRA_KEY (available: $(echo \"$TRANS\" | jq -r '[.transitions[].name] | join(\", \")'))" >> errors.log
+              echo "❌ Could not find 'InProgress2Review' transition for $JIRA_KEY (available: $(echo \"$TRANS\" | jq -r '[.transitions[].name] | join(\", \")'))" >> errors.log
             else
               curl -sf -X POST \
                 -u "$JIRA_EMAIL:$JIRA_TOKEN" \
@@ -135,9 +139,9 @@ jobs:
           TRANS=$(curl -sf -u "$JIRA_EMAIL:$JIRA_TOKEN" \
             -H "Accept: application/json" \
             "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions")
-          TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.name | ascii_downcase | (. == "done" or contains("done"))) | .id' | head -1)
+          TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.name=="Review2Done") | .id' | head -1)
           if [ -z "$TRANS_ID" ]; then
-            echo "⚠️  Could not find 'Done' transition for $JIRA_KEY (available: $(echo "$TRANS" | jq -r '[.transitions[].name] | join(", ")')))" >> warnings.log
+            echo "⚠️  Could not find 'Review2Done' transition for $JIRA_KEY (available: $(echo "$TRANS" | jq -r '[.transitions[].name] | join(", ")'))" >> warnings.log
           else
             curl -sf -X POST \
               -u "$JIRA_EMAIL:$JIRA_TOKEN" \
@@ -145,6 +149,30 @@ jobs:
               -d "{\"transition\":{\"id\":\"$TRANS_ID\"}}" \
               "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions"
             echo "✅ Transitioned $JIRA_KEY: 'Review' → 'Done'"
+          fi
+
+      # ── 2c · Transition back to In Progress on changes requested ──
+      - name: "2c · Back to In Progress on changes requested"
+        if: steps.jira_key.outputs.key != '' && github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested'
+        env:
+          JIRA_KEY: ${{ steps.jira_key.outputs.key }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_DOMAIN: ${{ inputs.jira_domain }}
+        run: |
+          TRANS=$(curl -sf -u "$JIRA_EMAIL:$JIRA_TOKEN" \
+            -H "Accept: application/json" \
+            "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions")
+          TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.name=="Review2InProgress") | .id' | head -1)
+          if [ -z "$TRANS_ID" ]; then
+            echo "⚠️  Could not find 'Review2InProgress' transition for $JIRA_KEY (available: $(echo \"$TRANS\" | jq -r '[.transitions[].name] | join(\", \")'))" >> warnings.log
+          else
+            curl -sf -X POST \
+              -u "$JIRA_EMAIL:$JIRA_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"transition\":{\"id\":\"$TRANS_ID\"}}" \
+              "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions"
+            echo "✅ Transitioned $JIRA_KEY: 'Review' → 'In Progress' (changes requested by ${{ github.event.review.user.login }})"
           fi
 
       # ── 3 · Blocking dependencies must be DONE ─
