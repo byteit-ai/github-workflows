@@ -1,0 +1,289 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Shared container build & push workflow
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Supports ECR and DockerHub. Uses Docker BuildKit
+#  layer caching via GitHub Actions cache backend to
+#  minimise build time and CI minutes consumption.
+#
+#  Call from any repo:
+#    uses: byteit-ai/github-workflows/.github/workflows/container-build-push.yml@main
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+name: Container Build & Push
+
+on:
+    workflow_call:
+        inputs:
+            # ── Registry selection ──────────────────────
+            registry_type:
+                description: "Target registry: ecr | dockerhub"
+                type: string
+                required: true
+
+            # ── ECR settings ────────────────────────────
+            aws_role_arn:
+                description: "IAM role ARN assumed via GitHub OIDC (required for ECR)"
+                type: string
+                default: ""
+            aws_region:
+                description: "AWS region for ECR (default: eu-central-1)"
+                type: string
+                default: "eu-central-1"
+            ecr_repository:
+                description: "ECR repository name (without env prefix, e.g. 'backend'). Prefix is derived from environment_prefix."
+                type: string
+                default: ""
+            ecr_repository_full_name:
+                description: "Exact ECR repository name to use as-is (overrides ecr_repository + environment_prefix)."
+                type: string
+                default: ""
+            ecr_registry:
+                description: "Explicit ECR registry hostname (e.g. 123456789.dkr.ecr.eu-central-1.amazonaws.com). Required for ECR build-only runs where AWS login is skipped."
+                type: string
+                default: ""
+            environment_prefix:
+                description: "Environment prefix for ECR repo names: dev | prod (derived from branch if empty)"
+                type: string
+                default: ""
+
+            # ── DockerHub settings ──────────────────────
+            dockerhub_repository:
+                description: "DockerHub repository (e.g. byteit/myapp)"
+                type: string
+                default: ""
+
+            # ── Build settings ──────────────────────────
+            dockerfile:
+                description: "Path to Dockerfile (relative to context)"
+                type: string
+                default: "Dockerfile"
+            context:
+                description: "Docker build context path"
+                type: string
+                default: "."
+            build_args:
+                description: "Multi-line build-args (KEY=VALUE per line)"
+                type: string
+                default: ""
+            platforms:
+                description: "Target platform(s)"
+                type: string
+                default: "linux/amd64"
+            target:
+                description: "Docker build target stage (optional)"
+                type: string
+                default: ""
+
+            # ── Push control ────────────────────────────
+            push:
+                description: "Whether to push the image (false = build-only)"
+                type: boolean
+                default: true
+
+            # ── Tagging ─────────────────────────────────
+            tag_suffix:
+                description: "Optional suffix appended to image tag (e.g. model name)"
+                type: string
+                default: ""
+            extra_tags:
+                description: "Extra tags (newline-separated, full image:tag format)"
+                type: string
+                default: ""
+
+            # ── Cache ───────────────────────────────────
+            cache_key_prefix:
+                description: "Prefix for GHA cache key (to isolate caches per image)"
+                type: string
+                default: "docker"
+            write_cache:
+                description: "Whether to upload build cache back to GitHub Actions cache storage (set false on PRs to save cache quota)"
+                type: boolean
+                default: true
+
+        secrets:
+            DOCKERHUB_USERNAME:
+                required: false
+            DOCKERHUB_TOKEN:
+                required: false
+
+        outputs:
+            image_tag:
+                description: "Primary image tag that was built"
+                value: ${{ jobs.build-push.outputs.image_tag }}
+            full_image:
+                description: "Full image URI (registry/repo:tag)"
+                value: ${{ jobs.build-push.outputs.full_image }}
+
+permissions:
+    contents: read
+    id-token: write
+
+jobs:
+    build-push:
+        name: Build & Push
+        runs-on: ubuntu-latest
+        outputs:
+            image_tag: ${{ steps.meta.outputs.tag }}
+            full_image: ${{ steps.meta.outputs.full_image }}
+
+        steps:
+            # ── Checkout ──────────────────────────────
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            # ── Compute image metadata ────────────────
+            - name: Compute image tag & full URI
+              id: meta
+              run: |
+                  SHA7="${GITHUB_SHA::7}"
+                  BRANCH="${GITHUB_REF_NAME}"
+                  # Sanitise branch name for Docker tag
+                  SAFE_BRANCH=$(echo "$BRANCH" | sed 's/[^a-zA-Z0-9._-]/-/g' | cut -c1-50)
+
+                  SUFFIX="${{ inputs.tag_suffix }}"
+                  if [ -n "$SUFFIX" ]; then
+                    TAG="${SAFE_BRANCH}-${SUFFIX}-${SHA7}"
+                  else
+                    TAG="${SAFE_BRANCH}-${SHA7}"
+                  fi
+
+                  echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+                  echo "safe_branch=${SAFE_BRANCH}" >> "$GITHUB_OUTPUT"
+
+                  # Compute full image URI based on registry type
+                  if [ "${{ inputs.registry_type }}" = "ecr" ]; then
+                    echo "full_image=pending-ecr-login/${TAG}" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "full_image=${{ inputs.dockerhub_repository }}:${TAG}" >> "$GITHUB_OUTPUT"
+                  fi
+
+            # ── ECR Login ─────────────────────────────
+            - name: Configure AWS credentials
+              if: inputs.registry_type == 'ecr' && inputs.push
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ inputs.aws_role_arn }}
+                  aws-region: ${{ inputs.aws_region }}
+
+            - name: Login to Amazon ECR
+              if: inputs.registry_type == 'ecr' && inputs.push
+              id: ecr-login
+              uses: aws-actions/amazon-ecr-login@v2
+
+            - name: Set ECR image URI
+              if: inputs.registry_type == 'ecr'
+              id: ecr-uri
+              run: |
+                  REGISTRY="${{ inputs.ecr_registry }}"
+                  EXACT_REPO="${{ inputs.ecr_repository_full_name }}"
+
+                  if [ "${{ inputs.push }}" = "true" ]; then
+                    REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+                  fi
+
+                  if [ -z "$REGISTRY" ]; then
+                    echo "ECR registry hostname is required for build-only runs" >&2
+                    exit 1
+                  fi
+
+                  if [ -n "$EXACT_REPO" ]; then
+                    REPO="$EXACT_REPO"
+                    ENV_PREFIX="n/a"
+                  else
+                    # Resolve environment prefix: explicit input > branch-based
+                    ENV_PREFIX="${{ inputs.environment_prefix }}"
+                    if [ -z "$ENV_PREFIX" ]; then
+                      case "${GITHUB_REF_NAME}" in
+                        main) ENV_PREFIX="prod" ;;
+                        *)    ENV_PREFIX="dev"  ;;
+                      esac
+                    fi
+
+                    REPO="${ENV_PREFIX}-${{ inputs.ecr_repository }}"
+                  fi
+
+                  TAG="${{ steps.meta.outputs.tag }}"
+                  echo "image=${REGISTRY}/${REPO}:${TAG}" >> "$GITHUB_OUTPUT"
+                  echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
+                  echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
+                  echo "env_prefix=${ENV_PREFIX}" >> "$GITHUB_OUTPUT"
+
+            # ── DockerHub Login ───────────────────────
+            - name: Login to DockerHub
+              if: inputs.registry_type == 'dockerhub' && inputs.push
+              uses: docker/login-action@v3
+              with:
+                  username: ${{ secrets.DOCKERHUB_USERNAME }}
+                  password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+            # ── Docker Buildx setup ───────────────────
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            # ── Compute tags list ─────────────────────
+            - name: Compute tags
+              id: tags
+              run: |
+                  if [ "${{ inputs.registry_type }}" = "ecr" ]; then
+                    REGISTRY="${{ steps.ecr-uri.outputs.registry }}"
+                    REPO="${{ steps.ecr-uri.outputs.repo }}"
+                    BASE="${REGISTRY}/${REPO}"
+                  else
+                    BASE="${{ inputs.dockerhub_repository }}"
+                  fi
+
+                  TAG="${{ steps.meta.outputs.tag }}"
+                  SAFE_BRANCH="${{ steps.meta.outputs.safe_branch }}"
+
+                  # Primary tag: branch-sha
+                  TAGS="${BASE}:${TAG}"
+
+                  # Branch-latest tag (mutable, always points to latest build of that branch)
+                  TAGS="${TAGS}
+                  ${BASE}:${SAFE_BRANCH}-latest"
+
+                  # Extra tags (if provided)
+                  EXTRA="${{ inputs.extra_tags }}"
+                  if [ -n "$EXTRA" ]; then
+                    TAGS="${TAGS}
+                  ${EXTRA}"
+                  fi
+
+                  # Use delimiter for multiline output
+                  {
+                    echo "tags<<EOF"
+                    echo "$TAGS"
+                    echo "EOF"
+                  } >> "$GITHUB_OUTPUT"
+
+                  # Update full_image output
+                  echo "full_image=${BASE}:${TAG}" >> "$GITHUB_OUTPUT"
+
+            # ── Build & Push ──────────────────────────
+            - name: Build and push container image
+              uses: docker/build-push-action@v6
+              with:
+                  context: ${{ inputs.context }}
+                  file: ${{ inputs.context }}/${{ inputs.dockerfile }}
+                  push: ${{ inputs.push }}
+                  tags: ${{ steps.tags.outputs.tags }}
+                  build-args: ${{ inputs.build_args }}
+                  platforms: ${{ inputs.platforms }}
+                  target: ${{ inputs.target || '' }}
+                  cache-from: type=gha,scope=${{ inputs.cache_key_prefix }}
+                  cache-to: ${{ inputs.write_cache && format('type=gha,mode=max,scope={0}', inputs.cache_key_prefix) || '' }}
+                  provenance: false
+
+            # ── Summary ───────────────────────────────
+            - name: Print build summary
+              run: |
+                  echo "### 🐳 Container Build Summary" >> "$GITHUB_STEP_SUMMARY"
+                  echo "" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| Registry | \`${{ inputs.registry_type }}\` |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| Tag | \`${{ steps.meta.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| Pushed | \`${{ inputs.push }}\` |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| Dockerfile | \`${{ inputs.dockerfile }}\` |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| Environment | \`${{ steps.ecr-uri.outputs.env_prefix || 'n/a' }}\` |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| Cache scope | \`${{ inputs.cache_key_prefix }}\` |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| Cache uploaded | \`${{ inputs.write_cache }}\` |" >> "$GITHUB_STEP_SUMMARY"
