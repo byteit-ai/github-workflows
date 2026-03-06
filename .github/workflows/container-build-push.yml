@@ -32,6 +32,14 @@ on:
                 description: "ECR repository name (without env prefix, e.g. 'backend'). Prefix is derived from environment_prefix."
                 type: string
                 default: ""
+            ecr_repository_full_name:
+                description: "Exact ECR repository name to use as-is (overrides ecr_repository + environment_prefix)."
+                type: string
+                default: ""
+            ecr_registry:
+                description: "Explicit ECR registry hostname (e.g. 123456789.dkr.ecr.eu-central-1.amazonaws.com). Required for ECR build-only runs where AWS login is skipped."
+                type: string
+                default: ""
             environment_prefix:
                 description: "Environment prefix for ECR repo names: dev | prod (derived from branch if empty)"
                 type: string
@@ -86,6 +94,10 @@ on:
                 description: "Prefix for GHA cache key (to isolate caches per image)"
                 type: string
                 default: "docker"
+            write_cache:
+                description: "Whether to upload build cache back to GitHub Actions cache storage (set false on PRs to save cache quota)"
+                type: boolean
+                default: true
 
         secrets:
             DOCKERHUB_USERNAME:
@@ -146,14 +158,14 @@ jobs:
 
             # ── ECR Login ─────────────────────────────
             - name: Configure AWS credentials
-              if: inputs.registry_type == 'ecr'
+              if: inputs.registry_type == 'ecr' && inputs.push
               uses: aws-actions/configure-aws-credentials@v4
               with:
                   role-to-assume: ${{ inputs.aws_role_arn }}
                   aws-region: ${{ inputs.aws_region }}
 
             - name: Login to Amazon ECR
-              if: inputs.registry_type == 'ecr'
+              if: inputs.registry_type == 'ecr' && inputs.push
               id: ecr-login
               uses: aws-actions/amazon-ecr-login@v2
 
@@ -161,18 +173,34 @@ jobs:
               if: inputs.registry_type == 'ecr'
               id: ecr-uri
               run: |
-                  REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+                  REGISTRY="${{ inputs.ecr_registry }}"
+                  EXACT_REPO="${{ inputs.ecr_repository_full_name }}"
 
-                  # Resolve environment prefix: explicit input > branch-based
-                  ENV_PREFIX="${{ inputs.environment_prefix }}"
-                  if [ -z "$ENV_PREFIX" ]; then
-                    case "${GITHUB_REF_NAME}" in
-                      main) ENV_PREFIX="prod" ;;
-                      *)    ENV_PREFIX="dev"  ;;
-                    esac
+                  if [ "${{ inputs.push }}" = "true" ]; then
+                    REGISTRY="${{ steps.ecr-login.outputs.registry }}"
                   fi
 
-                  REPO="${ENV_PREFIX}-${{ inputs.ecr_repository }}"
+                  if [ -z "$REGISTRY" ]; then
+                    echo "ECR registry hostname is required for build-only runs" >&2
+                    exit 1
+                  fi
+
+                  if [ -n "$EXACT_REPO" ]; then
+                    REPO="$EXACT_REPO"
+                    ENV_PREFIX="n/a"
+                  else
+                    # Resolve environment prefix: explicit input > branch-based
+                    ENV_PREFIX="${{ inputs.environment_prefix }}"
+                    if [ -z "$ENV_PREFIX" ]; then
+                      case "${GITHUB_REF_NAME}" in
+                        main) ENV_PREFIX="prod" ;;
+                        *)    ENV_PREFIX="dev"  ;;
+                      esac
+                    fi
+
+                    REPO="${ENV_PREFIX}-${{ inputs.ecr_repository }}"
+                  fi
+
                   TAG="${{ steps.meta.outputs.tag }}"
                   echo "image=${REGISTRY}/${REPO}:${TAG}" >> "$GITHUB_OUTPUT"
                   echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
@@ -181,7 +209,7 @@ jobs:
 
             # ── DockerHub Login ───────────────────────
             - name: Login to DockerHub
-              if: inputs.registry_type == 'dockerhub'
+              if: inputs.registry_type == 'dockerhub' && inputs.push
               uses: docker/login-action@v3
               with:
                   username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -242,7 +270,7 @@ jobs:
                   platforms: ${{ inputs.platforms }}
                   target: ${{ inputs.target || '' }}
                   cache-from: type=gha,scope=${{ inputs.cache_key_prefix }}
-                  cache-to: type=gha,mode=max,scope=${{ inputs.cache_key_prefix }}
+                  cache-to: ${{ inputs.write_cache && format('type=gha,mode=max,scope={0}', inputs.cache_key_prefix) || '' }}
                   provenance: false
 
             # ── Summary ───────────────────────────────
@@ -258,3 +286,4 @@ jobs:
                   echo "| Dockerfile | \`${{ inputs.dockerfile }}\` |" >> "$GITHUB_STEP_SUMMARY"
                   echo "| Environment | \`${{ steps.ecr-uri.outputs.env_prefix || 'n/a' }}\` |" >> "$GITHUB_STEP_SUMMARY"
                   echo "| Cache scope | \`${{ inputs.cache_key_prefix }}\` |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| Cache uploaded | \`${{ inputs.write_cache }}\` |" >> "$GITHUB_STEP_SUMMARY"
