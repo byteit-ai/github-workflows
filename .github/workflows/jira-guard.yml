@@ -159,20 +159,42 @@ jobs:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           JIRA_DOMAIN: ${{ inputs.jira_domain }}
+          REVIEWER: ${{ github.event.review.user.login }}
         run: |
           TRANS=$(curl -sf -u "$JIRA_EMAIL:$JIRA_TOKEN" \
             -H "Accept: application/json" \
             "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions")
+          # Try named transition first, then fall back to any transition whose target is "In Progress"
           TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.name=="Review2InProgress") | .id' | head -1)
           if [ -z "$TRANS_ID" ]; then
-            echo "⚠️  Could not find 'Review2InProgress' transition for $JIRA_KEY (available: $(echo \"$TRANS\" | jq -r '[.transitions[].name] | join(\", \")'))" >> warnings.log
+            TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.to.name=="In Progress") | .id' | head -1)
+          fi
+          if [ -z "$TRANS_ID" ]; then
+            echo "⚠️  Could not find 'Review2InProgress' transition for $JIRA_KEY (available: $(echo "$TRANS" | jq -r '[.transitions[].name] | join(", ")')" >> warnings.log
           else
             curl -sf -X POST \
               -u "$JIRA_EMAIL:$JIRA_TOKEN" \
               -H "Content-Type: application/json" \
               -d "{\"transition\":{\"id\":\"$TRANS_ID\"}}" \
               "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions"
-            echo "✅ Transitioned $JIRA_KEY: 'Review' → 'In Progress' (changes requested by ${{ github.event.review.user.login }})"
+            echo "✅ Transitioned $JIRA_KEY: 'Review' → 'In Progress' (changes requested by $REVIEWER)"
+          fi
+
+          # ── Post review summary comment to Jira ──
+          # Read review body safely from the event payload (avoids shell-injection from $ {{ }} substitution)
+          REVIEW_BODY=$(jq -r '.review.body // ""' "$GITHUB_EVENT_PATH")
+          if [ -n "$REVIEW_BODY" ]; then
+            PAYLOAD=$(jq -n \
+              --arg reviewer "$REVIEWER" \
+              --arg body "$REVIEW_BODY" \
+              '{body: {version: 1, type: "doc", content: [{type: "paragraph", content: [{type: "text", text: ("🔄 Changes requested by " + $reviewer + ":\n\n" + $body)}]}]}}')
+            curl -sf -X POST \
+              -u "$JIRA_EMAIL:$JIRA_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD" \
+              "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/comment" || \
+              echo "⚠️  Failed to post review comment to Jira" >> warnings.log
+            echo "✅ Posted review summary comment to $JIRA_KEY"
           fi
 
       # ── 3 · Blocking dependencies must be DONE ─
@@ -185,10 +207,12 @@ jobs:
         run: |
           [ ! -f jira_response.json ] && exit 0
 
+          # Only pick up links where THIS issue is blocked by another (inward direction).
+          # Outward "Blocks" links (this issue blocks something else) must NOT block the PR.
           BLOCKERS=$(jq -r '
             .fields.issuelinks[]?
-            | select(.type.name=="Blocks" or .type.name=="is blocked by")
-            | .inwardIssue.key // .outwardIssue.key
+            | select(.type.name=="Blocks" and (.inwardIssue != null))
+            | .inwardIssue.key
           ' jira_response.json 2>/dev/null)
 
           OPEN=""
