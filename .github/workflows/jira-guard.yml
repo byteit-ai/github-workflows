@@ -32,7 +32,7 @@ on:
       max_files_hard:
         description: "Hard limit — total changed files"
         type: number
-        default: 20
+        default: 50
       min_description_length:
         description: "Minimum PR body length (chars)"
         type: number
