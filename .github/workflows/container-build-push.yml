@@ -87,9 +87,9 @@ on:
         type: string
         default: "docker"
       write_cache:
-        description: "Whether to upload build cache back to GitHub Actions cache storage (set false on PRs to save cache quota)"
-        type: boolean
-        default: true
+        description: "Cache write policy: 'auto' (default) = only write on push to main; 'true' = always write; 'false' = never write."
+        type: string
+        default: "auto"
 
     secrets:
       AWS_ROLE_ARN_DEV:
@@ -292,7 +292,7 @@ jobs:
           platforms: ${{ inputs.platforms }}
           target: ${{ inputs.target || '' }}
           cache-from: type=gha,scope=${{ inputs.cache_key_prefix }}
-          cache-to: ${{ inputs.write_cache && format('type=gha,mode=max,scope={0}', inputs.cache_key_prefix) || '' }}
+          cache-to: ${{ (inputs.write_cache == 'true' || (inputs.write_cache == 'auto' && github.event_name == 'push' && github.ref_name == 'main')) && format('type=gha,mode=max,scope={0}', inputs.cache_key_prefix) || '' }}
           provenance: false
 
       # ── Summary ───────────────────────────────
@@ -308,4 +308,4 @@ jobs:
           echo "| Dockerfile | \`${{ inputs.dockerfile }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Environment | \`${{ steps.ecr-uri.outputs.env_prefix || 'n/a' }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Cache scope | \`${{ inputs.cache_key_prefix }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Cache uploaded | \`${{ inputs.write_cache }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Cache uploaded | \`${{ inputs.write_cache == 'true' || (inputs.write_cache == 'auto' && github.event_name == 'push' && github.ref_name == 'main') }}\` |" >> "$GITHUB_STEP_SUMMARY"
