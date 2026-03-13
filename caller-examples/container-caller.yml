@@ -38,6 +38,8 @@ jobs:
     with:
       registry_type: ecr
       ecr_repository: "backend"              # ← change per repo (prefix auto-derived from branch)
-      aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
       # push only on merge to default branch; build-only on PRs
       push: ${{ github.event_name == 'push' }}
+    secrets:
+      AWS_ROLE_ARN_DEV: ${{ secrets.AWS_ROLE_ARN_DEV }}
+      AWS_ROLE_ARN_PROD: ${{ secrets.AWS_ROLE_ARN_PROD }}
