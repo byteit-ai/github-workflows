@@ -43,3 +43,4 @@ jobs:
     secrets:
       AWS_ROLE_ARN_DEV: ${{ secrets.AWS_ROLE_ARN_DEV }}
       AWS_ROLE_ARN_PROD: ${{ secrets.AWS_ROLE_ARN_PROD }}
+      ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
