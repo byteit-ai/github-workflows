@@ -32,10 +32,6 @@ on:
         description: "Exact ECR repository name to use as-is (overrides ecr_repository + environment_prefix)."
         type: string
         default: ""
-      ecr_registry:
-        description: "Explicit ECR registry hostname (e.g. 123456789.dkr.ecr.eu-central-1.amazonaws.com). Required for ECR build-only runs where AWS login is skipped."
-        type: string
-        default: ""
       environment_prefix:
         description: "Environment prefix for ECR repo names: dev | prod (derived from branch if empty)"
         type: string
@@ -103,6 +99,8 @@ on:
       DOCKERHUB_USERNAME:
         required: false
       DOCKERHUB_TOKEN:
+        required: false
+      ECR_REGISTRY:
         required: false
 
     outputs:
@@ -206,7 +204,7 @@ jobs:
         if: inputs.registry_type == 'ecr'
         id: ecr-uri
         run: |
-          REGISTRY="${{ inputs.ecr_registry }}"
+          REGISTRY="${{ secrets.ECR_REGISTRY }}"
           EXACT_REPO="${{ inputs.ecr_repository_full_name }}"
           ENV_PREFIX="${{ steps.resolve-ecr.outputs.env_prefix }}"
 
