@@ -91,6 +91,12 @@ on:
         type: string
         default: "auto"
 
+      # ── Notifications ───────────────────────────
+      notification_email:
+        description: "E-mail address to notify on failure or timeout (leave empty to skip)"
+        type: string
+        default: ""
+
     secrets:
       AWS_ROLE_ARN_DEV:
         required: false
@@ -101,6 +107,15 @@ on:
       DOCKERHUB_TOKEN:
         required: false
       ECR_REGISTRY:
+        required: false
+      # ── SMTP (required only when notification_email is set) ──
+      SMTP_SERVER:
+        required: false
+      SMTP_PORT:
+        required: false
+      SMTP_USERNAME:
+        required: false
+      SMTP_PASSWORD:
         required: false
 
     outputs:
@@ -119,6 +134,7 @@ jobs:
   build-push:
     name: Build & Push
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     outputs:
       image_tag: ${{ steps.meta.outputs.tag }}
       full_image: ${{ steps.meta.outputs.full_image }}
@@ -309,3 +325,24 @@ jobs:
           echo "| Environment | \`${{ steps.ecr-uri.outputs.env_prefix || 'n/a' }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Cache scope | \`${{ inputs.cache_key_prefix }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Cache uploaded | \`${{ inputs.write_cache == 'true' || (inputs.write_cache == 'auto' && github.event_name == 'push' && github.ref_name == 'main') }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Failure / timeout notification ────────
+      - name: Notify on failure or timeout
+        if: failure() && inputs.notification_email != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT || '587' }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "\u274C Workflow failed / timed out: ${{ github.workflow }} (${{ github.repository }})"
+          to: ${{ inputs.notification_email }}
+          from: GitHub Actions <${{ secrets.SMTP_USERNAME }}>
+          body: |
+            The workflow exceeded its time limit or encountered an error and was stopped.
+
+            Workflow:   ${{ github.workflow }}
+            Repository: ${{ github.repository }}
+            Branch:     ${{ github.ref_name }}
+            Triggered:  ${{ github.event_name }}
+            Run URL:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

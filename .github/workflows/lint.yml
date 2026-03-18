@@ -8,12 +8,29 @@ name: Lint
 
 on:
   workflow_call:
+    inputs:
+      # ── Notifications ───────────────────────────
+      notification_email:
+        description: "E-mail address to notify on failure or timeout (leave empty to skip)"
+        type: string
+        default: ""
+    secrets:
+      # ── SMTP (required only when notification_email is set) ──
+      SMTP_SERVER:
+        required: false
+      SMTP_PORT:
+        required: false
+      SMTP_USERNAME:
+        required: false
+      SMTP_PASSWORD:
+        required: false
   workflow_dispatch:
 
 jobs:
   lint:
     name: Lint (ruff)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Checkout repository
@@ -34,3 +51,24 @@ jobs:
 
       - name: Ruff — format check
         run: ruff format . --check --config .github-workflows/ruff.toml
+
+      # ── Failure / timeout notification ────────
+      - name: Notify on failure or timeout
+        if: failure() && inputs.notification_email != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT || '587' }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "\u274C Workflow failed / timed out: ${{ github.workflow }} (${{ github.repository }})"
+          to: ${{ inputs.notification_email }}
+          from: GitHub Actions <${{ secrets.SMTP_USERNAME }}>
+          body: |
+            The workflow exceeded its time limit or encountered an error and was stopped.
+
+            Workflow:   ${{ github.workflow }}
+            Repository: ${{ github.repository }}
+            Branch:     ${{ github.ref_name }}
+            Triggered:  ${{ github.event_name }}
+            Run URL:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

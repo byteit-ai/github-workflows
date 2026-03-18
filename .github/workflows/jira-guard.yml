@@ -37,16 +37,31 @@ on:
         description: "Minimum PR body length (chars)"
         type: number
         default: 20
+      # ── Notifications ───────────────────────────
+      notification_email:
+        description: "E-mail address to notify on failure or timeout (leave empty to skip)"
+        type: string
+        default: ""
     secrets:
       JIRA_EMAIL:
         required: true
       JIRA_API_TOKEN:
         required: true
+      # ── SMTP (required only when notification_email is set) ──
+      SMTP_SERVER:
+        required: false
+      SMTP_PORT:
+        required: false
+      SMTP_USERNAME:
+        required: false
+      SMTP_PASSWORD:
+        required: false
 
 jobs:
   jira-guard:
     name: Jira Guard
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       # ── 0 · Setup ─────────────────────────────
@@ -345,3 +360,25 @@ jobs:
           fi
 
           echo "### ✅ All checks passed"
+
+      # ── Failure / timeout notification ────────
+      - name: Notify on failure or timeout
+        if: failure() && inputs.notification_email != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT || '587' }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "❌ Workflow failed / timed out: ${{ github.workflow }} (${{ github.repository }})"
+          to: ${{ inputs.notification_email }}
+          from: GitHub Actions <${{ secrets.SMTP_USERNAME }}>
+          body: |
+            The workflow exceeded its time limit or encountered an error and was stopped.
+
+            Workflow:   ${{ github.workflow }}
+            Repository: ${{ github.repository }}
+            Branch:     ${{ github.ref_name }}
+            PR:         ${{ github.event.pull_request.html_url }}
+            Triggered:  ${{ github.event_name }}
+            Run URL:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
