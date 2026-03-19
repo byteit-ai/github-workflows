@@ -9,6 +9,22 @@ name: Lint
 on:
   workflow_call:
     inputs:
+      max_lines_warn:
+        description: "Soft limit — total changed lines"
+        type: number
+        default: 200
+      max_lines_hard:
+        description: "Hard limit — total changed lines"
+        type: number
+        default: 1000
+      max_files_warn:
+        description: "Soft limit — total changed files"
+        type: number
+        default: 10
+      max_files_hard:
+        description: "Hard limit — total changed files"
+        type: number
+        default: 50
       # ── Notifications ───────────────────────────
       notification_email:
         description: "E-mail address to notify on failure or timeout (leave empty to skip)"
@@ -35,6 +51,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Init log files
+        run: touch errors.log warnings.log
 
       - name: Checkout shared ruff config
         uses: actions/checkout@v4
@@ -51,6 +72,61 @@ jobs:
 
       - name: Ruff — format check
         run: ruff format . --check --config .github-workflows/ruff.toml
+
+      # ── PR size — lines & files ────────────
+      - name: PR size
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch origin "$BASE_REF" --quiet 2>/dev/null || true
+
+          # Exclude docs / config / lock files, migrations, and test files from line counts
+          STATS=$(git diff --numstat "origin/$BASE_REF"..."$HEAD_SHA" \
+            -- . ':!*.md' ':!*.txt' ':!*.json' ':!*.yml' ':!*.yaml' ':!*.lock' \
+               ':!**/migrations/**' ':!**/test_*.py' \
+            2>/dev/null || true)
+
+          ADD=0; DEL=0; FILES=0
+          while IFS=$'\t' read -r a d f; do
+            [ -z "$f" ] && continue
+            [[ "$a" == "-" ]] && continue          # skip binaries
+            ADD=$((ADD + a)); DEL=$((DEL + d)); FILES=$((FILES + 1))
+          done <<< "$STATS"
+
+          LINES=$((ADD + DEL))
+
+          # ── Lines ──
+          if [ "$LINES" -gt ${{ inputs.max_lines_hard }} ]; then
+            echo "❌ PR too large: $LINES lines changed (limit ${{ inputs.max_lines_hard }})" >> errors.log
+          elif [ "$LINES" -gt ${{ inputs.max_lines_warn }} ]; then
+            echo "⚠️  Large PR: $LINES lines changed (recommended < ${{ inputs.max_lines_warn }})" >> warnings.log
+          fi
+
+          # ── Files ──
+          if [ "$FILES" -gt ${{ inputs.max_files_hard }} ]; then
+            echo "❌ Too many files changed: $FILES (limit ${{ inputs.max_files_hard }})" >> errors.log
+          elif [ "$FILES" -gt ${{ inputs.max_files_warn }} ]; then
+            echo "⚠️  Many files changed: $FILES (recommended < ${{ inputs.max_files_warn }})" >> warnings.log
+          fi
+
+      # ── 📋 Size report ─────────────────────────
+      - name: Size report
+        if: always() && github.event_name == 'pull_request'
+        run: |
+          if [ -s warnings.log ]; then
+            echo "### ⚠️  Warnings"
+            cat warnings.log
+            echo ""
+          fi
+
+          if [ -s errors.log ]; then
+            echo "### ❌ Errors"
+            cat errors.log
+            echo ""
+            exit 1
+          fi
 
       # ── Failure / timeout notification ────────
       - name: Notify on failure or timeout

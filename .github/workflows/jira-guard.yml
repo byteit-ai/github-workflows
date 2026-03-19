@@ -17,22 +17,6 @@ on:
         description: "Jira cloud domain (e.g. mycompany.atlassian.net)"
         type: string
         default: "byteit-ai.atlassian.net"
-      max_lines_warn:
-        description: "Soft limit — total changed lines"
-        type: number
-        default: 200
-      max_lines_hard:
-        description: "Hard limit — total changed lines"
-        type: number
-        default: 1000
-      max_files_warn:
-        description: "Soft limit — total changed files"
-        type: number
-        default: 10
-      max_files_hard:
-        description: "Hard limit — total changed files"
-        type: number
-        default: 50
       min_description_length:
         description: "Minimum PR body length (chars)"
         type: number
@@ -246,45 +230,8 @@ jobs:
             echo "❌ Blocked by unresolved dependencies:$OPEN" >> errors.log
           fi
 
-      # ── 4 · PR size — lines & files ────────────
-      - name: "4 · PR size"
-        env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          git fetch origin "$BASE_REF" --quiet 2>/dev/null || true
-
-          # Exclude docs / config / lock files, migrations, and test files from line counts
-          STATS=$(git diff --numstat "origin/$BASE_REF"..."$HEAD_SHA" \
-            -- . ':!*.md' ':!*.txt' ':!*.json' ':!*.yml' ':!*.yaml' ':!*.lock' \
-               ':!**/migrations/**' ':!**/test_*.py' \
-            2>/dev/null || true)
-
-          ADD=0; DEL=0; FILES=0
-          while IFS=$'\t' read -r a d f; do
-            [ -z "$f" ] && continue
-            [[ "$a" == "-" ]] && continue          # skip binaries
-            ADD=$((ADD + a)); DEL=$((DEL + d)); FILES=$((FILES + 1))
-          done <<< "$STATS"
-
-          LINES=$((ADD + DEL))
-
-          # ── Lines ──
-          if [ "$LINES" -gt ${{ inputs.max_lines_hard }} ]; then
-            echo "❌ PR too large: $LINES lines changed (limit ${{ inputs.max_lines_hard }})" >> errors.log
-          elif [ "$LINES" -gt ${{ inputs.max_lines_warn }} ]; then
-            echo "⚠️  Large PR: $LINES lines changed (recommended < ${{ inputs.max_lines_warn }})" >> warnings.log
-          fi
-
-          # ── Files ──
-          if [ "$FILES" -gt ${{ inputs.max_files_hard }} ]; then
-            echo "❌ Too many files changed: $FILES (limit ${{ inputs.max_files_hard }})" >> errors.log
-          elif [ "$FILES" -gt ${{ inputs.max_files_warn }} ]; then
-            echo "⚠️  Many files changed: $FILES (recommended < ${{ inputs.max_files_warn }})" >> warnings.log
-          fi
-
-      # ── 5 · Sensitive / secret file scan ───────
-      - name: "5 · Sensitive file scan"
+      # ── 4 · Sensitive / secret file scan ───────
+      - name: "4 · Sensitive file scan"
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -308,8 +255,8 @@ jobs:
             echo -e "$FLAGGED" >> errors.log
           fi
 
-      # ── 6 · PR description ────────────────────
-      - name: "6 · PR description"
+      # ── 5 · PR description ────────────────────
+      - name: "5 · PR description"
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
@@ -318,8 +265,8 @@ jobs:
             echo "⚠️  PR description too short ($LEN chars, min ${{ inputs.min_description_length }})" >> warnings.log
           fi
 
-      # ── 7 · Branch policy ─────────────────────
-      - name: "7 · Branch policy"
+      # ── 6 · Branch policy ─────────────────────
+      - name: "6 · Branch policy"
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
