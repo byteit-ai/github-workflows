@@ -24,7 +24,7 @@ on:
       max_lines_hard:
         description: "Hard limit — total changed lines"
         type: number
-        default: 500
+        default: 1000
       max_files_warn:
         description: "Soft limit — total changed files"
         type: number
