@@ -153,15 +153,23 @@ jobs:
           # Sanitise branch name for Docker tag
           SAFE_BRANCH=$(echo "$BRANCH" | sed 's/[^a-zA-Z0-9._-]/-/g' | cut -c1-50)
 
+          # Map main branch to prod prefix in tags
+          if [ "$SAFE_BRANCH" = "main" ]; then
+            TAG_PREFIX="prod"
+          else
+            TAG_PREFIX="$SAFE_BRANCH"
+          fi
+
           SUFFIX="${{ inputs.tag_suffix }}"
           if [ -n "$SUFFIX" ]; then
-            TAG="${SAFE_BRANCH}-${SUFFIX}-${SHA7}"
+            TAG="${TAG_PREFIX}-${SUFFIX}-${SHA7}"
           else
-            TAG="${SAFE_BRANCH}-${SHA7}"
+            TAG="${TAG_PREFIX}-${SHA7}"
           fi
 
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "safe_branch=${SAFE_BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "tag_prefix=${TAG_PREFIX}" >> "$GITHUB_OUTPUT"
 
           # Compute full image URI based on registry type
           if [ "${{ inputs.registry_type }}" = "ecr" ]; then
@@ -270,14 +278,14 @@ jobs:
           fi
 
           TAG="${{ steps.meta.outputs.tag }}"
-          SAFE_BRANCH="${{ steps.meta.outputs.safe_branch }}"
+          TAG_PREFIX="${{ steps.meta.outputs.tag_prefix }}"
 
           # Primary tag: branch-sha
           TAGS="${BASE}:${TAG}"
 
           # Branch-latest tag (mutable, always points to latest build of that branch)
           TAGS="${TAGS}
-          ${BASE}:${SAFE_BRANCH}-latest"
+          ${BASE}:${TAG_PREFIX}-latest"
 
           # Extra tags (if provided)
           EXTRA="${{ inputs.extra_tags }}"
