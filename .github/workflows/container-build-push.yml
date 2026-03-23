@@ -185,7 +185,10 @@ jobs:
         run: |
           ENV_PREFIX="${{ inputs.environment_prefix }}"
           if [ -z "$ENV_PREFIX" ]; then
-            case "${GITHUB_REF_NAME}" in
+            # For pull_request events GITHUB_REF_NAME is "<pr#>/merge";
+            # use GITHUB_BASE_REF (the PR target branch) instead.
+            TARGET_BRANCH="${GITHUB_BASE_REF:-${GITHUB_REF_NAME}}"
+            case "${TARGET_BRANCH}" in
               main) ENV_PREFIX="prod" ;;
               *)    ENV_PREFIX="dev" ;;
             esac
@@ -213,14 +216,14 @@ jobs:
           echo "aws_role_arn=${AWS_ROLE_ARN}" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials
-        if: inputs.registry_type == 'ecr' && inputs.push
+        if: inputs.registry_type == 'ecr' && inputs.push == true
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ steps.resolve-ecr.outputs.aws_role_arn }}
           aws-region: ${{ inputs.aws_region }}
 
       - name: Login to Amazon ECR
-        if: inputs.registry_type == 'ecr' && inputs.push
+        if: inputs.registry_type == 'ecr' && inputs.push == true
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
