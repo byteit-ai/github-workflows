@@ -7,6 +7,9 @@
 #
 #  Call from any repo:
 #    uses: byteit-ai/github-workflows/.github/workflows/container-build-push.yml@main
+#
+#  Debug: set repo secret ACTIONS_STEP_DEBUG=true for verbose runner logs.
+#  Shell scripts honour $RUNNER_DEBUG via set -x automatically.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 name: Container Build & Push
 
@@ -148,6 +151,7 @@ jobs:
       - name: Compute image tag & full URI
         id: meta
         run: |
+          [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
           SHA7="${GITHUB_SHA::7}"
           BRANCH="${GITHUB_REF_NAME}"
           # Sanitise branch name for Docker tag

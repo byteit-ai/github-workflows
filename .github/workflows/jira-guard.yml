@@ -6,8 +6,9 @@
 #
 #  Caller must trigger on:
 #    pull_request: [opened, synchronize, reopened, closed]
-#    pull_request_review: [submitted]   ← required for "changes requested" → In Progress
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#    pull_request_review: [submitted]   ← required for "changes requested" → In Progress#
+#  Debug: set repo secret ACTIONS_STEP_DEBUG=true for verbose runner logs.
+#  Shell scripts honour $RUNNER_DEBUG via set -x automatically.# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 name: Jira Guard
 
 on:
@@ -65,6 +66,7 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
+          [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
           KEY=""
           # dev → main is a release PR — no Jira key required
           if [[ "$HEAD_REF" == "dev" && "$BASE_REF" == "main" ]]; then
@@ -287,26 +289,34 @@ jobs:
           fi
 
       # ── 📋 Final report ───────────────────────
-      - name: Report
+      - name: "📋 Summary"
         if: always()
         run: |
-          echo "## 🛡️ Jira Guard"
-          echo ""
-
-          if [ -s warnings.log ]; then
-            echo "### ⚠️  Warnings"
-            cat warnings.log
+          (
+            echo "## 🛡️ Jira Guard"
             echo ""
-          fi
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Jira key | \`${{ steps.jira_key.outputs.key || 'n/a' }}\` |"
+            echo "| Event | \`${{ github.event_name }}\` / \`${{ github.event.action }}\` |"
+            echo "| Branch | \`${{ github.event.pull_request.head.ref }}\` → \`${{ github.event.pull_request.base.ref }}\` |"
+            echo ""
+            if [ -s warnings.log ]; then
+              echo "### ⚠️  Warnings"
+              cat warnings.log
+              echo ""
+            fi
+            if [ -s errors.log ]; then
+              echo "### ❌ Errors"
+              cat errors.log
+            else
+              echo "### ✅ All checks passed"
+            fi
+          ) | tee -a "$GITHUB_STEP_SUMMARY"
 
           if [ -s errors.log ]; then
-            echo "### ❌ Errors"
-            cat errors.log
-            echo ""
             exit 1
           fi
-
-          echo "### ✅ All checks passed"
 
       # ── Failure / timeout notification ────────
       - name: Notify on failure or timeout

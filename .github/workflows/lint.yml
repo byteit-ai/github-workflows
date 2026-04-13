@@ -3,6 +3,9 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Call from any repo:
 #    uses: byteit-ai/github-workflows/.github/workflows/lint.yml@main
+#
+#  Debug: set repo secret ACTIONS_STEP_DEBUG=true for verbose runner logs.
+#  Shell scripts honour $RUNNER_DEBUG via set -x automatically.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 name: Lint
 
@@ -65,13 +68,20 @@ jobs:
           sparse-checkout: ruff.toml
 
       - name: Install Ruff
-        run: pip install ruff==0.15.2
+        run: |
+          [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
+          pip install ruff==0.15.2
+          ruff --version
 
       - name: Ruff — lint
-        run: ruff check . --config .github-workflows/ruff.toml --output-format=github
+        run: |
+          [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
+          ruff check . --config .github-workflows/ruff.toml --output-format=github
 
       - name: Ruff — format check
-        run: ruff format . --check --config .github-workflows/ruff.toml
+        run: |
+          [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
+          ruff format . --check --config .github-workflows/ruff.toml
 
       # ── PR size — lines & files ────────────
       - name: PR size
@@ -80,6 +90,7 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
           git fetch origin "$BASE_REF" --quiet 2>/dev/null || true
 
           # Exclude docs / config / lock files, migrations, and test files from line counts
@@ -112,19 +123,23 @@ jobs:
           fi
 
       # ── 📋 Size report ─────────────────────────
-      - name: Size report
+      - name: "📋 Size Report"
         if: always() && github.event_name == 'pull_request'
         run: |
-          if [ -s warnings.log ]; then
-            echo "### ⚠️  Warnings"
-            cat warnings.log
-            echo ""
-          fi
+          (
+            if [ -s warnings.log ]; then
+              echo "### ⚠️  Warnings"
+              cat warnings.log
+              echo ""
+            fi
+            if [ -s errors.log ]; then
+              echo "### ❌ Errors"
+              cat errors.log
+              echo ""
+            fi
+          ) | tee -a "$GITHUB_STEP_SUMMARY"
 
           if [ -s errors.log ]; then
-            echo "### ❌ Errors"
-            cat errors.log
-            echo ""
             exit 1
           fi
 

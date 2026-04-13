@@ -1,3 +1,12 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Rebase feature branch from sprint — reusable
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Call from any repo:
+#    uses: byteit-ai/.github/.github/workflows/rebase-feature-from-sprint.core.yml@main
+#
+#  Debug: set repo secret ACTIONS_STEP_DEBUG=true for verbose runner logs.
+#  Shell scripts honour $RUNNER_DEBUG via set -x automatically.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 name: rebase-feature-from-sprint (core)
 
 on:
@@ -51,6 +60,7 @@ jobs:
       - name: Parse feature branch
         id: parse
         run: |
+          [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
           BRANCH="${{ steps.vars.outputs.branch }}"
 
           if [[ "$BRANCH" =~ ^sprint([0-9]+)-([A-Z]+-[0-9]+)-(.*)$ ]]; then
@@ -119,8 +129,19 @@ jobs:
         run: |
           git push --force-with-lease origin "${{ steps.vars.outputs.branch }}"
 
-      - name: Done
-        run: echo "✔️ Feature branch rebased successfully"
+      - name: "✅ Done"
+        run: |
+          echo "✔️ Feature branch rebased successfully"
+          {
+            echo "## 🔀 Rebase Feature from Sprint"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Branch | \`${{ steps.vars.outputs.branch }}\` |"
+            echo "| Sprint | \`${{ steps.parse.outputs.sprint }}\` |"
+            echo "| Ticket | \`${{ steps.parse.outputs.ticket }}\` |"
+            echo "| Status | ✅ Rebased successfully |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # ── Failure / timeout notification ────────
       - name: Notify on failure or timeout
