@@ -140,16 +140,23 @@ jobs:
           TRANS=$(curl -sf -u "$JIRA_EMAIL:$JIRA_TOKEN" \
             -H "Accept: application/json" \
             "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions")
+          # Try named transition first, then fall back to any transition whose target is "Done"
           TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.name=="Review2Done") | .id' | head -1)
           if [ -z "$TRANS_ID" ]; then
-            echo "⚠️  Could not find 'Review2Done' transition for $JIRA_KEY (available: $(echo "$TRANS" | jq -r '[.transitions[].name] | join(", ")'))" >> warnings.log
+            TRANS_ID=$(echo "$TRANS" | jq -r '.transitions[] | select(.to.name=="Done") | .id' | head -1)
+          fi
+          if [ -z "$TRANS_ID" ]; then
+            echo "⚠️  Could not find a transition to 'Done' for $JIRA_KEY (available: $(echo "$TRANS" | jq -r '[.transitions[].name] | join(", ")'))" >> warnings.log
           else
+            FROM_STATUS=$(curl -sf -u "$JIRA_EMAIL:$JIRA_TOKEN" \
+              -H "Accept: application/json" \
+              "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY" | jq -r '.fields.status.name')
             curl -sf -X POST \
               -u "$JIRA_EMAIL:$JIRA_TOKEN" \
               -H "Content-Type: application/json" \
               -d "{\"transition\":{\"id\":\"$TRANS_ID\"}}" \
               "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/transitions"
-            echo "✅ Transitioned $JIRA_KEY: 'Review' → 'Done'"
+            echo "✅ Transitioned $JIRA_KEY: '$FROM_STATUS' → 'Done'"
           fi
 
       # ── 2c · Transition back to In Progress on changes requested ──
