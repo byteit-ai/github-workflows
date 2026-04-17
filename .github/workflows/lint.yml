@@ -108,11 +108,13 @@ jobs:
 
           LINES=$((ADD + DEL))
 
-          # ── Lines ──
-          if [ "$LINES" -gt ${{ inputs.max_lines_hard }} ]; then
-            echo "❌ PR too large: $LINES lines changed (limit ${{ inputs.max_lines_hard }})" >> errors.log
-          elif [ "$LINES" -gt ${{ inputs.max_lines_warn }} ]; then
-            echo "⚠️  Large PR: $LINES lines changed (recommended < ${{ inputs.max_lines_warn }})" >> warnings.log
+          # ── Lines (only enforced for PRs into dev) ──
+          if [ "$BASE_REF" = "dev" ]; then
+            if [ "$LINES" -gt ${{ inputs.max_lines_hard }} ]; then
+              echo "❌ PR too large: $LINES lines changed (limit ${{ inputs.max_lines_hard }})" >> errors.log
+            elif [ "$LINES" -gt ${{ inputs.max_lines_warn }} ]; then
+              echo "⚠️  Large PR: $LINES lines changed (recommended < ${{ inputs.max_lines_warn }})" >> warnings.log
+            fi
           fi
 
           # ── Files ──
