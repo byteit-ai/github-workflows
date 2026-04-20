@@ -28,15 +28,18 @@ on:
         type: string
         default: "eu-central-1"
       ecr_repository:
-        description: "ECR repository name (without env prefix, e.g. 'backend'). Prefix is derived from environment_prefix."
+        description: "ECR repository name (without env prefix, e.g. 'backend'). Prefix
+          is derived from environment_prefix."
         type: string
         default: ""
       ecr_repository_full_name:
-        description: "Exact ECR repository name to use as-is (overrides ecr_repository + environment_prefix)."
+        description: "Exact ECR repository name to use as-is (overrides ecr_repository +
+          environment_prefix)."
         type: string
         default: ""
       environment_prefix:
-        description: "Environment prefix for ECR repo names: dev | prod (derived from branch if empty)"
+        description: "Environment prefix for ECR repo names: dev | prod (derived from
+          branch if empty)"
         type: string
         default: ""
 
@@ -90,7 +93,8 @@ on:
         type: string
         default: "docker"
       write_cache:
-        description: "Cache write policy: 'auto' (default) = only write on push to main; 'true' = always write; 'false' = never write."
+        description: "Cache write policy: 'auto' (default) = only write on push to main;
+          'true' = always write; 'false' = never write."
         type: string
         default: "auto"
 
@@ -104,6 +108,10 @@ on:
       AWS_ROLE_ARN_DEV:
         required: false
       AWS_ROLE_ARN_PROD:
+        required: false
+      ECR_REGISTRY_DEV:
+        required: false
+      ECR_REGISTRY_PROD:
         required: false
       DOCKERHUB_USERNAME:
         required: false
@@ -235,16 +243,28 @@ jobs:
         if: inputs.registry_type == 'ecr'
         id: ecr-uri
         run: |
-          REGISTRY="${{ secrets.ECR_REGISTRY }}"
           EXACT_REPO="${{ inputs.ecr_repository_full_name }}"
           ENV_PREFIX="${{ steps.resolve-ecr.outputs.env_prefix }}"
+
+          case "$ENV_PREFIX" in
+            prod)
+              REGISTRY="${{ secrets.ECR_REGISTRY_PROD || secrets.ECR_REGISTRY }}"
+              ;;
+            dev)
+              REGISTRY="${{ secrets.ECR_REGISTRY_DEV || secrets.ECR_REGISTRY }}"
+              ;;
+            *)
+              echo "Unsupported environment_prefix '$ENV_PREFIX'. Expected 'dev' or 'prod'." >&2
+              exit 1
+              ;;
+          esac
 
           if [ "${{ inputs.push }}" = "true" ]; then
             REGISTRY="${{ steps.ecr-login.outputs.registry }}"
           fi
 
           if [ -z "$REGISTRY" ]; then
-            echo "ECR registry hostname is required for build-only runs" >&2
+            echo "ECR registry hostname is required for environment '$ENV_PREFIX'. Set ECR_REGISTRY_${ENV_PREFIX^^} or fallback ECR_REGISTRY." >&2
             exit 1
           fi
 
@@ -323,7 +343,10 @@ jobs:
           platforms: ${{ inputs.platforms }}
           target: ${{ inputs.target || '' }}
           cache-from: type=gha,scope=${{ inputs.cache_key_prefix }}
-          cache-to: ${{ (inputs.write_cache == 'true' || (inputs.write_cache == 'auto' && github.event_name == 'push' && github.ref_name == 'main')) && format('type=gha,mode=max,scope={0}', inputs.cache_key_prefix) || '' }}
+          cache-to: ${{ (inputs.write_cache == 'true' || (inputs.write_cache == 'auto' &&
+            github.event_name == 'push' && github.ref_name == 'main')) &&
+            format('type=gha,mode=max,scope={0}', inputs.cache_key_prefix) || ''
+            }}
           provenance: false
 
       # ── Summary ───────────────────────────────
@@ -350,7 +373,8 @@ jobs:
           server_port: ${{ secrets.SMTP_PORT || '587' }}
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "\u274C Workflow failed / timed out: ${{ github.workflow }} (${{ github.repository }})"
+          subject: "❌ Workflow failed / timed out: ${{ github.workflow }} (${{
+            github.repository }})"
           to: ${{ inputs.notification_email }}
           from: GitHub Actions <${{ secrets.SMTP_USERNAME }}>
           body: |
