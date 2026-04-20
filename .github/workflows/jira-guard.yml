@@ -319,7 +319,7 @@ jobs:
     name: Conflict Check
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     permissions:
       pull-requests: read
       contents: read
