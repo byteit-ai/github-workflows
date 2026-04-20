@@ -7,7 +7,7 @@
 #  Debug: set repo secret ACTIONS_STEP_DEBUG=true for verbose runner logs.
 #  Shell scripts honour $RUNNER_DEBUG via set -x automatically.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-name: rebase-feature-from-sprint (core)
+name: Rebase Feature from Sprint
 
 on:
   workflow_call:
