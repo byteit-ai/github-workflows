@@ -1,14 +1,16 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  Jira Guard — reusable PR quality gate
+#  Jira Guard — reusable PR quality gate + conflict scanner
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Call from any repo:
-#    uses: byteit-ai/github-workflows/.github/workflows/jira-guard.yml@main
+#    uses: byteit-ai/.github/.github/workflows/jira-guard.yml@main
 #
 #  Caller must trigger on:
 #    pull_request: [opened, synchronize, reopened, closed]
-#    pull_request_review: [submitted]   ← required for "changes requested" → In Progress#
+#    pull_request_review: [submitted]   ← required for "changes requested" → In Progress
+#    push: [dev, main, sprint*]         ← required for conflict detection
 #  Debug: set repo secret ACTIONS_STEP_DEBUG=true for verbose runner logs.
-#  Shell scripts honour $RUNNER_DEBUG via set -x automatically.# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Shell scripts honour $RUNNER_DEBUG via set -x automatically.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 name: Jira Guard
 
 on:
@@ -22,29 +24,16 @@ on:
         description: "Minimum PR body length (chars)"
         type: number
         default: 20
-      # ── Notifications ───────────────────────────
-      notification_email:
-        description: "E-mail address to notify on failure or timeout (leave empty to skip)"
-        type: string
-        default: ""
     secrets:
       JIRA_EMAIL:
         required: true
       JIRA_API_TOKEN:
         required: true
-      # ── SMTP (required only when notification_email is set) ──
-      SMTP_SERVER:
-        required: false
-      SMTP_PORT:
-        required: false
-      SMTP_USERNAME:
-        required: false
-      SMTP_PASSWORD:
-        required: false
 
 jobs:
   jira-guard:
     name: Jira Guard
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -325,24 +314,102 @@ jobs:
             exit 1
           fi
 
-      # ── Failure / timeout notification ────────
-      - name: Notify on failure or timeout
-        if: failure() && inputs.notification_email != ''
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: ${{ secrets.SMTP_SERVER }}
-          server_port: ${{ secrets.SMTP_PORT || '587' }}
-          username: ${{ secrets.SMTP_USERNAME }}
-          password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "❌ Workflow failed / timed out: ${{ github.workflow }} (${{ github.repository }})"
-          to: ${{ inputs.notification_email }}
-          from: GitHub Actions <${{ secrets.SMTP_USERNAME }}>
-          body: |
-            The workflow exceeded its time limit or encountered an error and was stopped.
+  # ── Conflict scanner — runs on push only ─────────────────────────────────
+  conflict-check:
+    name: Conflict Check
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pull-requests: read
+      contents: read
 
-            Workflow:   ${{ github.workflow }}
-            Repository: ${{ github.repository }}
-            Branch:     ${{ github.ref_name }}
-            PR:         ${{ github.event.pull_request.html_url }}
-            Triggered:  ${{ github.event_name }}
-            Run URL:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Scan open PRs for merge conflicts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_DOMAIN: ${{ inputs.jira_domain }}
+          REPO: ${{ github.repository }}
+        run: |
+          [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
+
+          PRS=$(gh api "repos/$REPO/pulls?state=open&per_page=100")
+          CONFLICT_COUNT=0
+
+          while IFS= read -r PR; do
+            PR_NUMBER=$(echo "$PR" | jq -r '.number')
+            HEAD_REF=$(echo "$PR"  | jq -r '.head.ref')
+            BASE_REF=$(echo "$PR"  | jq -r '.base.ref')
+
+            # Skip dev→main release PRs
+            [[ "$HEAD_REF" == "dev" && "$BASE_REF" == "main" ]] && continue
+
+            # GitHub computes mergeability lazily — retry up to 5 times
+            MERGEABLE="null"
+            for i in $(seq 1 5); do
+              PR_DETAIL=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
+              MERGEABLE=$(echo "$PR_DETAIL" | jq -r '.mergeable')
+              MERGEABLE_STATE=$(echo "$PR_DETAIL" | jq -r '.mergeable_state')
+              [[ "$MERGEABLE" != "null" ]] && break
+              sleep 6
+            done
+
+            [[ "$MERGEABLE" != "false" && "$MERGEABLE_STATE" != "dirty" ]] && continue
+
+            echo "⚠️  PR #$PR_NUMBER ($HEAD_REF → $BASE_REF) has conflicts"
+            CONFLICT_COUNT=$((CONFLICT_COUNT + 1))
+
+            # Extract Jira key from branch name
+            KEY=""
+            [[ "$HEAD_REF" =~ ^([A-Z]+-[0-9]+)(-|$) ]] && KEY="${BASH_REMATCH[1]}"
+            [ -z "$KEY" ] && echo "  ↳ No Jira key found, skipping" && continue
+
+            # Fetch Jira issue
+            HTTP=$(curl -s -o "jira_${KEY}.json" -w "%{http_code}" \
+              -u "$JIRA_EMAIL:$JIRA_TOKEN" -H "Accept: application/json" \
+              "https://$JIRA_DOMAIN/rest/api/3/issue/$KEY")
+            [ "$HTTP" -ne 200 ] && echo "  ↳ $KEY not found (HTTP $HTTP)" && continue
+
+            ASSIGNEE_ID=$(jq -r '.fields.assignee.accountId // ""' "jira_${KEY}.json")
+
+            # Transition to In Progress
+            TRANS=$(curl -sf -u "$JIRA_EMAIL:$JIRA_TOKEN" -H "Accept: application/json" \
+              "https://$JIRA_DOMAIN/rest/api/3/issue/$KEY/transitions")
+            TRANS_ID=$(echo "$TRANS" | jq -r '
+              .transitions[] | select(.name=="Review2InProgress" or .to.name=="In Progress") | .id
+            ' | head -1)
+            if [ -n "$TRANS_ID" ]; then
+              curl -s -o /dev/null -X POST -u "$JIRA_EMAIL:$JIRA_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "{\"transition\":{\"id\":\"$TRANS_ID\"}}" \
+                "https://$JIRA_DOMAIN/rest/api/3/issue/$KEY/transitions"
+              echo "  ↳ $KEY → In Progress"
+            fi
+
+            # Post comment with @mention if assignee exists
+            PR_URL="${GITHUB_SERVER_URL}/$REPO/pull/$PR_NUMBER"
+            if [ -n "$ASSIGNEE_ID" ]; then
+              PAYLOAD=$(jq -n \
+                --arg pr_url "$PR_URL" --arg pr_num "$PR_NUMBER" --arg id "$ASSIGNEE_ID" \
+                '{body:{version:1,type:"doc",content:[{type:"paragraph",content:[
+                  {type:"mention",attrs:{id:$id,text:"@assignee",accessLevel:"APPLICATION"}},
+                  {type:"text",text:(" PR #"+$pr_num+" has merge conflicts: "+$pr_url)}
+                ]}]}}')
+            else
+              PAYLOAD=$(jq -n \
+                --arg pr_url "$PR_URL" --arg pr_num "$PR_NUMBER" \
+                '{body:{version:1,type:"doc",content:[{type:"paragraph",content:[
+                  {type:"text",text:("⚠️ PR #"+$pr_num+" has merge conflicts: "+$pr_url)}
+                ]}]}}')
+            fi
+            curl -s -o /dev/null -X POST -u "$JIRA_EMAIL:$JIRA_TOKEN" \
+              -H "Content-Type: application/json" -d "$PAYLOAD" \
+              "https://$JIRA_DOMAIN/rest/api/3/issue/$KEY/comment"
+            echo "  ↳ Comment posted to $KEY"
+
+          done < <(echo "$PRS" | jq -c '.[]')
+
+          echo "## 🔀 Conflict Check — $CONFLICT_COUNT conflicting PR(s) found" >> "$GITHUB_STEP_SUMMARY"
+
