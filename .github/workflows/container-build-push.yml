@@ -73,8 +73,6 @@ on:
       ECR_REGISTRY: { required: false }
       DOCKERHUB_USERNAME: { required: false }
       DOCKERHUB_TOKEN: { required: false }
-      STRIPE_PUBLISHABLE_KEY_DEV: { required: false }
-      STRIPE_PUBLISHABLE_KEY_PROD: { required: false }
 
     outputs:
       image_tag:
@@ -119,8 +117,6 @@ jobs:
           ECR_REGISTRY_DEV: ${{ secrets.ECR_REGISTRY_DEV }}
           ECR_REGISTRY_PROD: ${{ secrets.ECR_REGISTRY_PROD }}
           ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
-          STRIPE_PUBLISHABLE_KEY_DEV: ${{ secrets.STRIPE_PUBLISHABLE_KEY_DEV }}
-          STRIPE_PUBLISHABLE_KEY_PROD: ${{ secrets.STRIPE_PUBLISHABLE_KEY_PROD }}
         run: |
           [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
 
@@ -161,24 +157,7 @@ jobs:
           echo "full_image=${BASE}:${TAG}"    >> "$GITHUB_OUTPUT"
           { echo "tags<<EOF"; echo "$TAGS"; echo "EOF"; } >> "$GITHUB_OUTPUT"
 
-          # Append Stripe keys to build_args if secrets exist
-          FINAL_BUILD_ARGS="${INPUT_BUILD_ARGS}"
-          if [ -n "${STRIPE_PUBLISHABLE_KEY_DEV}" ] || [ -n "${STRIPE_PUBLISHABLE_KEY_PROD}" ]; then
-            SELECTED_KEY=""
-            if [ "${ENV_PREFIX}" = "prod" ] && [ -n "${STRIPE_PUBLISHABLE_KEY_PROD}" ]; then
-              SELECTED_KEY="${STRIPE_PUBLISHABLE_KEY_PROD}"
-            elif [ -n "${STRIPE_PUBLISHABLE_KEY_DEV}" ]; then
-              SELECTED_KEY="${STRIPE_PUBLISHABLE_KEY_DEV}"
-            fi
-            if [ -n "${SELECTED_KEY}" ]; then
-              if [ -n "${FINAL_BUILD_ARGS}" ]; then
-                FINAL_BUILD_ARGS="${FINAL_BUILD_ARGS}$(printf '\n')STRIPE_PUBLISHABLE_KEY=${SELECTED_KEY}$(printf '\n')NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${SELECTED_KEY}"
-              else
-                FINAL_BUILD_ARGS="STRIPE_PUBLISHABLE_KEY=${SELECTED_KEY}$(printf '\n')NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${SELECTED_KEY}"
-              fi
-            fi
-          fi
-          { echo "final_build_args<<EOF"; echo "$FINAL_BUILD_ARGS"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+          { echo "final_build_args<<EOF"; echo "${INPUT_BUILD_ARGS}"; echo "EOF"; } >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials
         if: inputs.registry_type == 'ecr' && inputs.push == true
