@@ -73,6 +73,8 @@ on:
       ECR_REGISTRY: { required: false }
       DOCKERHUB_USERNAME: { required: false }
       DOCKERHUB_TOKEN: { required: false }
+      STRIPE_PUBLISHABLE_KEY_DEV: { required: false }
+      STRIPE_PUBLISHABLE_KEY_PROD: { required: false }
 
     outputs:
       image_tag:
@@ -103,6 +105,7 @@ jobs:
       - name: Resolve image metadata
         id: resolve
         env:
+          INPUT_BUILD_ARGS: ${{ inputs.build_args }}
           ENV_PREFIX_INPUT: ${{ inputs.environment_prefix }}
           REGISTRY_TYPE: ${{ inputs.registry_type }}
           ECR_REPO: ${{ inputs.ecr_repository }}
@@ -116,6 +119,8 @@ jobs:
           ECR_REGISTRY_DEV: ${{ secrets.ECR_REGISTRY_DEV }}
           ECR_REGISTRY_PROD: ${{ secrets.ECR_REGISTRY_PROD }}
           ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          STRIPE_PUBLISHABLE_KEY_DEV: ${{ secrets.STRIPE_PUBLISHABLE_KEY_DEV }}
+          STRIPE_PUBLISHABLE_KEY_PROD: ${{ secrets.STRIPE_PUBLISHABLE_KEY_PROD }}
         run: |
           [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
 
@@ -126,9 +131,11 @@ jobs:
           TAG_PREFIX=$([ "$SAFE_BRANCH" = "main" ] && echo "prod" || echo "$SAFE_BRANCH")
           TAG="${TAG_PREFIX}${TAG_SUFFIX:+-${TAG_SUFFIX}}-${SHA7}"
 
+          # Determine environment (for both ECR and Stripe)
+          ENV_PREFIX="${ENV_PREFIX_INPUT:-$([ "$TAG_PREFIX" = "prod" ] && echo "prod" || echo "dev")}"
+
           # ECR: env prefix, role, registry, repo
           if [ "$REGISTRY_TYPE" = "ecr" ]; then
-            ENV_PREFIX="${ENV_PREFIX_INPUT:-$([ "$TAG_PREFIX" = "prod" ] && echo "prod" || echo "dev")}"
             case "$ENV_PREFIX" in
               prod) AWS_ROLE="${AWS_ROLE_ARN_PROD}"; REGISTRY="${ECR_REGISTRY_PROD:-$ECR_REGISTRY}" ;;
               dev)  AWS_ROLE="${AWS_ROLE_ARN_DEV}";  REGISTRY="${ECR_REGISTRY_DEV:-$ECR_REGISTRY}" ;;
@@ -153,6 +160,25 @@ jobs:
           echo "tag=${TAG}"                   >> "$GITHUB_OUTPUT"
           echo "full_image=${BASE}:${TAG}"    >> "$GITHUB_OUTPUT"
           { echo "tags<<EOF"; echo "$TAGS"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+
+          # Append Stripe keys to build_args if secrets exist
+          FINAL_BUILD_ARGS="${INPUT_BUILD_ARGS}"
+          if [ -n "${STRIPE_PUBLISHABLE_KEY_DEV}" ] || [ -n "${STRIPE_PUBLISHABLE_KEY_PROD}" ]; then
+            SELECTED_KEY=""
+            if [ "${ENV_PREFIX}" = "prod" ] && [ -n "${STRIPE_PUBLISHABLE_KEY_PROD}" ]; then
+              SELECTED_KEY="${STRIPE_PUBLISHABLE_KEY_PROD}"
+            elif [ -n "${STRIPE_PUBLISHABLE_KEY_DEV}" ]; then
+              SELECTED_KEY="${STRIPE_PUBLISHABLE_KEY_DEV}"
+            fi
+            if [ -n "${SELECTED_KEY}" ]; then
+              if [ -n "${FINAL_BUILD_ARGS}" ]; then
+                FINAL_BUILD_ARGS="${FINAL_BUILD_ARGS}$(printf '\n')STRIPE_PUBLISHABLE_KEY=${SELECTED_KEY}$(printf '\n')NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${SELECTED_KEY}"
+              else
+                FINAL_BUILD_ARGS="STRIPE_PUBLISHABLE_KEY=${SELECTED_KEY}$(printf '\n')NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${SELECTED_KEY}"
+              fi
+            fi
+          fi
+          { echo "final_build_args<<EOF"; echo "$FINAL_BUILD_ARGS"; echo "EOF"; } >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials
         if: inputs.registry_type == 'ecr' && inputs.push == true
@@ -188,7 +214,7 @@ jobs:
           file: ${{ inputs.context }}/${{ inputs.dockerfile }}
           push: ${{ inputs.push }}
           tags: ${{ steps.resolve.outputs.tags }}
-          build-args: ${{ inputs.build_args }}
+          build-args: ${{ steps.resolve.outputs.final_build_args }}
           platforms: ${{ inputs.platforms }}
           target: ${{ inputs.target }}
           cache-from: type=gha,scope=${{ inputs.cache_key_prefix }}
