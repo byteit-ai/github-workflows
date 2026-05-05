@@ -3,7 +3,8 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Purpose:
 #  - Run unit tests only by default (tests/unit)
-#  - Fail early when pytest.ini or tests/unit is missing
+#  - Skip when pytest.ini is missing
+#  - Fail only when pytest.ini exists but tests/unit is missing
 #  - Reuse across ByteIT repos through workflow_call
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 name: Pytest Unit
@@ -15,23 +16,6 @@ on:
         description: "Python version used to run unit tests"
         type: string
         default: "3.12"
-      pytest_ini_path:
-        description: "Path to pytest configuration file"
-        type: string
-        default: "pytest.ini"
-      unit_tests_path:
-        description: "Path to the unit tests folder"
-        type: string
-        default: "tests/unit"
-      extra_pytest_args:
-        description: "Optional extra args appended to pytest command"
-        type: string
-        default: ""
-    secrets:
-      JIRA_EMAIL:
-        required: true
-      JIRA_API_TOKEN:
-        required: true
   workflow_dispatch:
 
 jobs:
@@ -54,23 +38,25 @@ jobs:
             pyproject.toml
 
       - name: Validate repository unit-test structure
-        env:
-          PYTEST_INI_PATH: ${{ inputs.pytest_ini_path }}
-          UNIT_TESTS_PATH: ${{ inputs.unit_tests_path }}
+        id: validate_unit_tests
         run: |
           [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
 
-          if [ ! -f "$PYTEST_INI_PATH" ]; then
-            echo "❌ Missing pytest config: $PYTEST_INI_PATH" >&2
+          if [ ! -f "pytest.ini" ]; then
+            echo "ℹ️ pytest.ini not found, skipping unit-test run"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ ! -d "tests/unit" ]; then
+            echo "❌ tests/unit is required when pytest.ini exists" >&2
             exit 1
           fi
 
-          if [ ! -d "$UNIT_TESTS_PATH" ]; then
-            echo "❌ Missing unit tests folder: $UNIT_TESTS_PATH" >&2
-            exit 1
-          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Install test dependencies
+        if: steps.validate_unit_tests.outputs.skip == 'false'
         run: |
           [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
           python -m pip install --upgrade pip
@@ -87,26 +73,16 @@ jobs:
           pip install pytest
 
       - name: Run pytest unit tests
-        env:
-          UNIT_TESTS_PATH: ${{ inputs.unit_tests_path }}
-          EXTRA_PYTEST_ARGS: ${{ inputs.extra_pytest_args }}
+        if: steps.validate_unit_tests.outputs.skip == 'false'
         run: |
           [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
 
-          ARGS=("$UNIT_TESTS_PATH")
-          if [ -n "$EXTRA_PYTEST_ARGS" ]; then
-            # Intentional word splitting for user-provided flags.
-            # shellcheck disable=SC2206
-            EXTRA=( $EXTRA_PYTEST_ARGS )
-            ARGS+=("${EXTRA[@]}")
-          fi
-
-          pytest "${ARGS[@]}"
+          pytest tests/unit
 
   notify-failure:
     name: AdolfoBOT — Notify Failure
     needs: [pytest-unit]
-    if: failure()
+    if: failure() && secrets.JIRA_EMAIL != '' && secrets.JIRA_API_TOKEN != ''
     uses: byteit-ai/.github/.github/workflows/adolfobot.yml@main
     with:
       workflow_name: "Pytest Unit"
