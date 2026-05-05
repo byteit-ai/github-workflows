@@ -177,11 +177,13 @@ jobs:
             # comment mode — use comment_body as-is
             COMMENT="$COMMENT_BODY"
           else
-            # failure mode — build standard failure message
+            # failure mode — build standard failure message with bypass policy footnote
             COMMENT="❌ *${WORKFLOW_NAME}* failed on GitHub Actions.\n\n→ [View run](${RUN_URL})"
             if [ -n "$EXTRA_CONTEXT" ]; then
               COMMENT="${COMMENT}\n\n---\n${EXTRA_CONTEXT}"
             fi
+            # Append bypass policy footnote
+            COMMENT="${COMMENT}\n\n---\n_ℹ️ Bypassing requires team-lead approval. Green pipelines = faster reviews, safer deploys. 🙏_"
           fi
 
           PAYLOAD=$(jq -n --arg text "$COMMENT" '{
