@@ -1,0 +1,116 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Pytest Unit — reusable workflow
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Purpose:
+#  - Run unit tests only by default (tests/unit)
+#  - Fail early when pytest.ini or tests/unit is missing
+#  - Reuse across ByteIT repos through workflow_call
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+name: Pytest Unit
+
+on:
+  workflow_call:
+    inputs:
+      python_version:
+        description: "Python version used to run unit tests"
+        type: string
+        default: "3.12"
+      pytest_ini_path:
+        description: "Path to pytest configuration file"
+        type: string
+        default: "pytest.ini"
+      unit_tests_path:
+        description: "Path to the unit tests folder"
+        type: string
+        default: "tests/unit"
+      extra_pytest_args:
+        description: "Optional extra args appended to pytest command"
+        type: string
+        default: ""
+    secrets:
+      JIRA_EMAIL:
+        required: true
+      JIRA_API_TOKEN:
+        required: true
+  workflow_dispatch:
+
+jobs:
+  pytest-unit:
+    name: Pytest Unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements*.txt
+            pyproject.toml
+
+      - name: Validate repository unit-test structure
+        env:
+          PYTEST_INI_PATH: ${{ inputs.pytest_ini_path }}
+          UNIT_TESTS_PATH: ${{ inputs.unit_tests_path }}
+        run: |
+          [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
+
+          if [ ! -f "$PYTEST_INI_PATH" ]; then
+            echo "❌ Missing pytest config: $PYTEST_INI_PATH" >&2
+            exit 1
+          fi
+
+          if [ ! -d "$UNIT_TESTS_PATH" ]; then
+            echo "❌ Missing unit tests folder: $UNIT_TESTS_PATH" >&2
+            exit 1
+          fi
+
+      - name: Install test dependencies
+        run: |
+          [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          elif [ -f pyproject.toml ]; then
+            pip install .
+          else
+            echo "❌ No requirements.txt or pyproject.toml found for dependency install" >&2
+            exit 1
+          fi
+
+          pip install pytest
+
+      - name: Run pytest unit tests
+        env:
+          UNIT_TESTS_PATH: ${{ inputs.unit_tests_path }}
+          EXTRA_PYTEST_ARGS: ${{ inputs.extra_pytest_args }}
+        run: |
+          [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
+
+          ARGS=("$UNIT_TESTS_PATH")
+          if [ -n "$EXTRA_PYTEST_ARGS" ]; then
+            # Intentional word splitting for user-provided flags.
+            # shellcheck disable=SC2206
+            EXTRA=( $EXTRA_PYTEST_ARGS )
+            ARGS+=("${EXTRA[@]}")
+          fi
+
+          pytest "${ARGS[@]}"
+
+  notify-failure:
+    name: AdolfoBOT — Notify Failure
+    needs: [pytest-unit]
+    if: failure()
+    uses: byteit-ai/.github/.github/workflows/adolfobot.yml@main
+    with:
+      workflow_name: "Pytest Unit"
+      extra_context: |
+        Unit-test workflow failed.
+        Verify pytest.ini exists and tests/unit contains passing tests.
+    secrets: inherit
