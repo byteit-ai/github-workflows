@@ -1,0 +1,40 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Copy this file to each Python repo:
+#    .github/workflows/pytest-unit.yml
+#
+#  Purpose:
+#  - Run unit tests only (tests/unit) in PRs and pushes to dev/main
+#  - Delegate failure Jira comments/rollback to AdolfoBOT in reusable workflow
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+name: Pytest Unit
+
+on:
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - "tests/**"
+      - "src/**"
+      - "requirements*.txt"
+      - "pyproject.toml"
+      - "pytest.ini"
+  push:
+    branches: [dev, main]
+    paths:
+      - "tests/**"
+      - "src/**"
+      - "requirements*.txt"
+      - "pyproject.toml"
+      - "pytest.ini"
+
+concurrency:
+  group: pytest-unit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest-unit:
+    permissions:
+      contents: read
+    uses: byteit-ai/.github/.github/workflows/pytest-unit.yml@main
+    with:
+      python_version: "3.12"
+    secrets: inherit
