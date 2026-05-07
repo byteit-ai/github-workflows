@@ -252,7 +252,7 @@ jobs:
           def p(*nodes): return {"type": "paragraph", "content": list(nodes)}
           def rule(): return {"type": "rule"}
 
-          header = [t("[AdolfoBOT] says")]
+          header = [t("[AdolfoBOT 🤖] says")]
           if ASSIGNEE_ID:
             header += [t(" to "), mention(ASSIGNEE_ID, ASSIGNEE_NAME)]
           header.append(t(":"))
