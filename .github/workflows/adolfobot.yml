@@ -124,7 +124,31 @@ jobs:
           fi
           echo "key=$KEY" >> "$GITHUB_OUTPUT"
 
-      # ── 2 · Transition to In Progress (failure mode only) ─────────────────
+      # ── 2 · Fetch Jira assignee ───────────────────────────────────────────
+      - name: "[AdolfoBOT] Fetch Jira assignee"
+        id: assignee
+        if: steps.jira_key.outputs.key != ''
+        env:
+          JIRA_KEY:    ${{ steps.jira_key.outputs.key }}
+          JIRA_EMAIL:  ${{ secrets.JIRA_EMAIL }}
+          JIRA_TOKEN:  ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_DOMAIN: ${{ inputs.jira_domain }}
+        run: |
+          [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
+          HTTP=$(curl -s -o issue.json -w "%{http_code}" \
+            -u "$JIRA_EMAIL:$JIRA_TOKEN" \
+            -H "Accept: application/json" \
+            "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY?fields=assignee")
+          if [ "$HTTP" -eq 200 ]; then
+            echo "account_id=$(jq -r '.fields.assignee.accountId // ""' issue.json)" >> "$GITHUB_OUTPUT"
+            echo "display_name=$(jq -r '.fields.assignee.displayName // ""' issue.json)" >> "$GITHUB_OUTPUT"
+          else
+            echo "⚠️  [AdolfoBOT] Failed to fetch assignee for $JIRA_KEY (HTTP $HTTP)" >> warnings.log
+            echo "account_id=" >> "$GITHUB_OUTPUT"
+            echo "display_name=" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 3 · Transition to In Progress (failure mode only) ─────────────────
       - name: "[AdolfoBOT] Transition to In Progress"
         if: steps.jira_key.outputs.key != '' && inputs.mode == 'failure'
         env:
@@ -170,7 +194,7 @@ jobs:
             echo "⚠️  [AdolfoBOT] No 'In Progress' transition available for $JIRA_KEY (available: $(jq -r '[.transitions[].name] | join(\", \")' jira_trans.json))"
           fi
 
-      # ── 3 · Post Jira comment ─────────────────────────────────────────────
+      # ── 4 · Post Jira comment ─────────────────────────────────────────────
       - name: "[AdolfoBOT] Post Jira comment"
         if: steps.jira_key.outputs.key != ''
         env:
@@ -183,42 +207,85 @@ jobs:
           EXTRA_CONTEXT: ${{ inputs.extra_context }}
           COMMENT_BODY:  ${{ inputs.comment_body }}
           RUN_URL:       ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ASSIGNEE_ID:   ${{ steps.assignee.outputs.account_id }}
+          ASSIGNEE_NAME: ${{ steps.assignee.outputs.display_name }}
         run: |
-          [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
+          python3 - << 'PYEOF'
+          import json, os, sys, urllib.request, urllib.error, base64
 
-          if [ "$MODE" = "comment" ]; then
-            # comment mode — use comment_body as-is
-            COMMENT="$COMMENT_BODY"
-          else
-            # failure mode — build standard failure message with bypass policy footnote
-            COMMENT="❌ *${WORKFLOW_NAME}* failed on GitHub Actions.\n\n→ [View run](${RUN_URL})"
-            if [ -n "$EXTRA_CONTEXT" ]; then
-              COMMENT="${COMMENT}\n\n---\n${EXTRA_CONTEXT}"
-            fi
-            # Append bypass policy footnote
-            COMMENT="${COMMENT}\n\n---\n_ℹ️ Exceptionally, bypassing is possible with AdolfoNonBOT approval. Having full green pipelines = faster dev & reviews, safer deploys. 🙏_"
-          fi
+          MODE         = os.environ.get("MODE", "failure")
+          JIRA_KEY     = os.environ.get("JIRA_KEY", "")
+          JIRA_EMAIL   = os.environ.get("JIRA_EMAIL", "")
+          JIRA_TOKEN   = os.environ.get("JIRA_TOKEN", "")
+          JIRA_DOMAIN  = os.environ.get("JIRA_DOMAIN", "")
+          WORKFLOW     = os.environ.get("WORKFLOW_NAME", "")
+          EXTRA        = os.environ.get("EXTRA_CONTEXT", "")
+          BODY         = os.environ.get("COMMENT_BODY", "")
+          RUN_URL      = os.environ.get("RUN_URL", "")
+          ASSIGNEE_ID  = os.environ.get("ASSIGNEE_ID", "")
+          ASSIGNEE_NAME = os.environ.get("ASSIGNEE_NAME", "")
 
-          PAYLOAD=$(jq -n --arg text "$COMMENT" '{
-            body: {
-              version: 1, type: "doc",
-              content: [{ type: "paragraph", content: [{ type: "text", text: $text }] }]
-            }
-          }')
+          def t(text, *marks):
+            node = {"type": "text", "text": text}
+            if marks:
+              node["marks"] = [{"type": m} if isinstance(m, str) else m for m in marks]
+            return node
 
-          HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-            -u "$JIRA_EMAIL:$JIRA_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD" \
-            "https://$JIRA_DOMAIN/rest/api/3/issue/$JIRA_KEY/comment")
+          def bold(text): return t(text, "strong")
+          def em(text):   return t(text, "em")
+          def link(text, href): return t(text, {"type": "link", "attrs": {"href": href}})
+          def mention(uid, name): return {"type": "mention", "attrs": {"id": uid, "text": f"@{name}"}}
+          def p(*nodes): return {"type": "paragraph", "content": list(nodes)}
+          def rule(): return {"type": "rule"}
 
-          if [ "$HTTP" -ge 200 ] && [ "$HTTP" -lt 300 ]; then
-            echo "✅ [AdolfoBOT] Comment posted to $JIRA_KEY"
-          else
-            echo "⚠️  [AdolfoBOT] Failed to post comment to $JIRA_KEY (HTTP $HTTP)" >> warnings.log
-          fi
+          header = [t("[AdolfoBOT] says")]
+          if ASSIGNEE_ID:
+            header += [t(" to "), mention(ASSIGNEE_ID, ASSIGNEE_NAME)]
+          header.append(t(":"))
+          content = [p(*header)]
 
-      # ── 4 · Step summary ─────────────────────────────────────────────────
+          if MODE == "comment":
+            for line in BODY.split("\n"):
+              content.append(p(t(line or " ")))
+          else:
+            content.append(p(t("❌ "), bold(WORKFLOW), t(" failed on GitHub Actions.")))
+            content.append(p(link("→ View run", RUN_URL)))
+            if EXTRA.strip():
+              content.append(rule())
+              for line in EXTRA.split("\n"):
+                if line.strip():
+                  content.append(p(t(line)))
+            content.append(rule())
+            content.append(p(em(
+              "ℹ️ Exceptionally, bypassing is possible with AdolfoNonBOT approval. "
+              "Having full green pipelines = faster dev & reviews, safer deploys. 🙏"
+            )))
+
+          adf = {"version": 1, "type": "doc", "content": content}
+          payload = json.dumps({"body": adf}).encode()
+          creds = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
+          req = urllib.request.Request(
+            f"https://{JIRA_DOMAIN}/rest/api/3/issue/{JIRA_KEY}/comment",
+            data=payload,
+            headers={
+              "Authorization": f"Basic {creds}",
+              "Content-Type":  "application/json",
+              "Accept":        "application/json",
+            },
+            method="POST",
+          )
+          try:
+            with urllib.request.urlopen(req) as resp:
+              print(f"✅ [AdolfoBOT] Comment posted to {JIRA_KEY} (HTTP {resp.status})")
+          except urllib.error.HTTPError as e:
+            body = e.read().decode()
+            print(f"⚠️  [AdolfoBOT] Failed to post comment to {JIRA_KEY} (HTTP {e.code}): {body}", file=sys.stderr)
+            with open("warnings.log", "a") as f:
+              f.write(f"⚠️  [AdolfoBOT] Failed to post comment to {JIRA_KEY} (HTTP {e.code})\n")
+            sys.exit(1)
+          PYEOF
+
+      # ── 5 · Step summary ─────────────────────────────────────────────────
       - name: "[AdolfoBOT] Summary"
         if: always()
         env:
