@@ -16,6 +16,14 @@ on:
         description: "Python version used to run unit tests"
         type: string
         default: "3.12"
+      test_target:
+        description: "Pytest file or directory target"
+        type: string
+        default: "tests/unit"
+      marker_expression:
+        description: "Optional pytest -m expression"
+        type: string
+        default: ""
   workflow_dispatch:
 
 jobs:
@@ -41,6 +49,7 @@ jobs:
         id: validate_unit_tests
         run: |
           [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
+          TEST_TARGET="${{ inputs.test_target }}"
 
           if [ ! -f "pytest.ini" ]; then
             echo "ℹ️ pytest.ini not found, skipping unit-test run"
@@ -48,8 +57,8 @@ jobs:
             exit 0
           fi
 
-          if [ ! -d "tests/unit" ]; then
-            echo "❌ tests/unit is required when pytest.ini exists" >&2
+          if [ ! -e "$TEST_TARGET" ]; then
+            echo "❌ $TEST_TARGET is required when pytest.ini exists" >&2
             exit 1
           fi
 
@@ -76,8 +85,14 @@ jobs:
         if: steps.validate_unit_tests.outputs.skip == 'false'
         run: |
           [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
+          TEST_TARGET="${{ inputs.test_target }}"
+          MARKER_EXPRESSION="${{ inputs.marker_expression }}"
 
-          pytest tests/unit
+          if [ -n "$MARKER_EXPRESSION" ]; then
+            pytest "$TEST_TARGET" -m "$MARKER_EXPRESSION"
+          else
+            pytest "$TEST_TARGET"
+          fi
 
   notify-failure:
     name: AdolfoBOT — Notify Failure

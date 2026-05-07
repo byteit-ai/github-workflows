@@ -20,7 +20,6 @@ If unsure about repo specifics, ask the user:
 | Question | Why |
 |----------|-----|
 | Does this repo build container images? | Determines if container.caller.yml is needed |
-| Does this repo use sprint branching? | Determines if rebase-feature-from-sprint.caller.yml is needed |
 | Are there separate AWS accounts for dev/prod? | Affects ECR secret wiring |
 
 ## Checklist
@@ -30,15 +29,17 @@ If unsure about repo specifics, ask the user:
 Every repo MUST have:
 - `jira-guard-caller.yml` → calls `byteit-ai/.github/.github/workflows/jira-guard.yml@main`
 - `lint.yml` (shared ruff for Python repos, custom for TS repos)
-- `rebase-feature-from-sprint.caller.yml` → calls rebase core (currently disabled with `if: false` in core)
+
+Repos with a root `pytest.ini` MUST also have:
+- `pytest-unit.yml` → calls `byteit-ai/.github/.github/workflows/pytest-unit.yml@main`
 
 Container repos (saint-mary, web-dotdollar, ml-factory) MUST also have:
-- `container.caller.yml` → calls `byteit-ai/.github/.github/workflows/container-build-push.yml@main`
+- `container.caller.yml` → keeps repo-specific detect/matrix logic local and delegates actual image builds to `container-build-push.yml@main`
 
 ### 2. No duplicate builds
 
 - Only ONE workflow should push images per branch event. No standalone deploy-ecr / deploy-* workflows alongside container.caller.yml.
-- If a detection job exists (like web-dotdollar), ensure `if:` conditions use detect outputs for BOTH push and PR events — never bypass detect with `github.event_name == 'push'`.
+- If a detection or matrix-prep job exists, keep that repo-specific orchestration local and let only the actual image build/push call the shared reusable workflow.
 
 ### 3. ECR dev/prod logic
 
@@ -58,9 +59,9 @@ Callers MUST pass:
 | Workflow | Correct triggers | Why |
 |----------|-----------------|-----|
 | Lint | `pull_request` + `workflow_dispatch` only | Push to dev/main after PR merge is redundant (already linted on PR) |
+| Pytest Unit | `pull_request` + `workflow_dispatch` only | Unit tests should gate PRs but stay manually runnable on demand |
 | Container | `push: [dev, main]` + `pull_request: [dev, main]` with path filters | Push builds+pushes, PR builds only. Path filters avoid rebuilding on docs-only changes |
 | Jira Guard | `pull_request: [opened, edited, reopened, synchronize, closed]` + `pull_request_review: [submitted]` | Each event type serves a purpose (transitions, re-checks, Done on merge, back to InProgress on changes_requested) |
-| Rebase | `create: branches: sprint*-*` | Only on new sprint feature branches |
 
 ### 5. Images are prebuilt at merge time
 
@@ -70,9 +71,9 @@ Callers MUST pass:
 
 ### 6. Naming consistency
 
-- All workflow `name:` fields use Title Case (e.g., `Rebase Feature from Sprint`, `Container Build & Push`)
+- All workflow `name:` fields use Title Case (e.g., `Pytest Unit`, `Container Build & Push`)
 - Caller filenames: `<workflow>.caller.yml` (dot convention) or `<workflow>-caller.yml` for simple callers
-- Reusable workflow filenames: descriptive kebab-case ending in `.yml`
+- Reusable workflow filenames: descriptive kebab-case ending in `.yml`, but only for workflows shared by multiple repos
 
 ## Verification Command
 
