@@ -97,7 +97,7 @@ jobs:
   notify-failure:
     name: AdolfoBOT — Notify Failure
     needs: [pytest-unit]
-    if: failure() && secrets.JIRA_EMAIL != '' && secrets.JIRA_API_TOKEN != ''
+    if: failure() && github.event_name == 'pull_request' && github.run_attempt == 1 && secrets.JIRA_EMAIL != '' && secrets.JIRA_API_TOKEN != ''
     uses: byteit-ai/.github/.github/workflows/adolfobot.yml@main
     with:
       workflow_name: "Pytest Unit"

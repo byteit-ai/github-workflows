@@ -114,6 +114,26 @@ jobs:
             echo "⚠️  [AdolfoBOT] Jira secrets are missing (JIRA_EMAIL/JIRA_API_TOKEN) — Jira transition/comment steps will be skipped" >> warnings.log
           fi
 
+      - name: "[AdolfoBOT] Check notification policy"
+        id: notify_policy
+        env:
+          MODE: ${{ inputs.mode }}
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          [[ "${RUNNER_DEBUG:-0}" == "1" ]] && set -x
+          if [ "$MODE" != "failure" ]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$RUN_ATTEMPT" = "1" ]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️  [AdolfoBOT] Failure notification skipped by policy (event=$EVENT_NAME, run_attempt=$RUN_ATTEMPT)." >> warnings.log
+          fi
+
       # ── 1 · Resolve Jira key (override takes priority) ──────────────────
       - name: "[AdolfoBOT] Resolve Jira key"
         id: jira_key
@@ -141,7 +161,7 @@ jobs:
       # ── 2 · Fetch Jira assignee ───────────────────────────────────────────
       - name: "[AdolfoBOT] Fetch Jira assignee"
         id: assignee
-        if: steps.jira_key.outputs.key != '' && steps.jira_creds.outputs.available == 'true'
+        if: steps.jira_key.outputs.key != '' && steps.jira_creds.outputs.available == 'true' && steps.notify_policy.outputs.allowed == 'true'
         env:
           JIRA_KEY:    ${{ steps.jira_key.outputs.key }}
           JIRA_EMAIL:  ${{ secrets.JIRA_EMAIL }}
@@ -164,7 +184,7 @@ jobs:
 
       # ── 3 · Transition to In Progress (failure mode only) ─────────────────
       - name: "[AdolfoBOT] Transition to In Progress"
-        if: steps.jira_key.outputs.key != '' && inputs.mode == 'failure' && steps.jira_creds.outputs.available == 'true'
+        if: steps.jira_key.outputs.key != '' && inputs.mode == 'failure' && steps.jira_creds.outputs.available == 'true' && steps.notify_policy.outputs.allowed == 'true'
         env:
           JIRA_KEY:    ${{ steps.jira_key.outputs.key }}
           JIRA_EMAIL:  ${{ secrets.JIRA_EMAIL }}
@@ -210,7 +230,7 @@ jobs:
 
       # ── 4 · Post Jira comment ─────────────────────────────────────────────
       - name: "[AdolfoBOT] Post Jira comment"
-        if: steps.jira_key.outputs.key != '' && steps.jira_creds.outputs.available == 'true'
+        if: steps.jira_key.outputs.key != '' && steps.jira_creds.outputs.available == 'true' && steps.notify_policy.outputs.allowed == 'true'
         env:
           JIRA_KEY:      ${{ steps.jira_key.outputs.key }}
           JIRA_EMAIL:    ${{ secrets.JIRA_EMAIL }}
@@ -307,6 +327,9 @@ jobs:
           WORKFLOW_NAME: ${{ inputs.workflow_name }}
           MODE:          ${{ inputs.mode }}
           JIRA_CREDS:    ${{ steps.jira_creds.outputs.available }}
+          NOTIFY_ALLOWED: ${{ steps.notify_policy.outputs.allowed }}
+          EVENT_NAME:    ${{ github.event_name }}
+          RUN_ATTEMPT:   ${{ github.run_attempt }}
           RUN_URL:       ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           JIRA_DOMAIN:   ${{ inputs.jira_domain }}
         run: |
@@ -318,11 +341,17 @@ jobs:
             echo "| Mode | \`${MODE}\` |"
             echo "| Calling workflow | \`${WORKFLOW_NAME}\` |"
             echo "| Jira secrets available | \`${JIRA_CREDS}\` |"
+            echo "| Notification allowed | \`${NOTIFY_ALLOWED}\` |"
+            echo "| Event | \`${EVENT_NAME}\` |"
+            echo "| Run attempt | \`${RUN_ATTEMPT}\` |"
             echo "| Jira key | \`${JIRA_KEY:-n/a}\` |"
             echo "| Jira URL | ${JIRA_KEY:+https://${JIRA_DOMAIN}/browse/${JIRA_KEY}} |"
             echo "| Run URL | ${RUN_URL} |"
             if [ "${JIRA_CREDS}" != "true" ]; then
               echo ""
               echo "⚠️ Jira actions were skipped because required secrets are not configured in the caller repository."
+            elif [ "${NOTIFY_ALLOWED}" != "true" ]; then
+              echo ""
+              echo "⚠️ Jira actions were skipped by notification policy to prevent duplicate failure comments."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

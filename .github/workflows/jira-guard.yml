@@ -401,7 +401,7 @@ jobs:
   notify-failure:
     name: AdolfoBOT — Notify Failure
     needs: [jira-guard]
-    if: failure()
+    if: failure() && github.event_name == 'pull_request' && github.run_attempt == 1
     uses: byteit-ai/.github/.github/workflows/adolfobot.yml@main
     with:
       workflow_name: "Jira Guard"
